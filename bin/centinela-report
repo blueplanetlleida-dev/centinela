@@ -1,0 +1,199 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Centinela - envio de alertas e informes por correo.
+ *
+ *   centinela-report --alerts   Avisa solo si hay incidencias nuevas.
+ *   centinela-report --weekly   Informe semanal (siempre se envia).
+ *   centinela-report --test     Correo de prueba.
+ *
+ * --alerts lo dispara el timer del colector; --weekly, un timer semanal.
+ */
+
+declare(strict_types=1);
+
+$base = dirname(__DIR__);
+require $base . '/lib/util.php';
+require $base . '/lib/config.php';
+require $base . '/lib/mailer.php';
+require $base . '/lib/report.php';
+
+$opts = getopt('', ['alerts', 'weekly', 'test', 'dry-run', 'to:', 'force', 'help']);
+if (isset($opts['help']) || !array_intersect(['alerts', 'weekly', 'test'], array_keys($opts))) {
+    fwrite(STDOUT, <<<TXT
+Centinela - informes por correo
+
+  --alerts    Envia aviso si hay incidencias nuevas desde el ultimo correo
+  --weekly    Envia el informe semanal completo
+  --test      Envia un correo de prueba para validar la entrega
+  --to DIR    Sobrescribe el destinatario
+  --force     Ignora el antirrepeticion (solo con --alerts)
+  --dry-run   Muestra el correo por pantalla en vez de enviarlo
+
+TXT);
+    exit(isset($opts['help']) ? 0 : 1);
+}
+
+$cfg    = load_config();
+state_dir($cfg['state_dir']);
+$dryRun = isset($opts['dry-run']);
+
+$to = isset($opts['to']) ? [(string) $opts['to']] : mail_recipients($cfg);
+if (!$to && !$dryRun) {
+    fwrite(STDERR, "No hay destinatario configurado. Definir mail.to en " . ($cfg['_file'] ?? 'config.php') . "\n");
+    exit(2);
+}
+if (empty($cfg['mail']['enabled']) && !$dryRun && !isset($opts['test'])) {
+    fwrite(STDERR, "El envio de correo esta desactivado en la configuracion.\n");
+    exit(0);
+}
+
+$stateFile = $cfg['state_dir'] . '/state.json';
+$st = is_readable($stateFile) ? json_decode((string) slurp($stateFile, 33554432), true) : null;
+if (!is_array($st) && !isset($opts['test'])) {
+    fwrite(STDERR, "No se pudo leer {$stateFile}. ¿Se ha ejecutado el colector?\n");
+    exit(3);
+}
+
+$mailOpts = [
+    'from'      => $cfg['mail']['from'] ?: null,
+    'from_name' => $cfg['mail']['from_name'] ?? 'Centinela',
+    'host'      => $st['system']['hostname'] ?? php_uname('n'),
+];
+$mailOpts = array_filter($mailOpts, fn($v) => $v !== null);
+
+// ---------------------------------------------------------------- prueba ---
+if (isset($opts['test'])) {
+    $host = php_uname('n');
+    $html = mail_wrapper('Prueba de entrega', 'Centinela puede enviarte correo',
+        block_header('Prueba de entrega', $host . ' · ' . date('d/m/Y H:i'), 100, 'excelente')
+        . '<tr><td style="padding:22px 28px;color:#475467;font-size:14px;line-height:1.6;">'
+        . 'Si has recibido este mensaje, Centinela puede entregarte correo correctamente. '
+        . 'A partir de ahora recibiras alertas cuando aparezcan incidencias nuevas y un informe completo cada semana.'
+        . '</td></tr>');
+    $text = "Centinela - prueba de entrega\n\nServidor: {$host}\nFecha: " . date('d/m/Y H:i')
+        . "\n\nSi lees esto, el envio de correo funciona.\n";
+    exit(deliver($to, '[Centinela] Prueba de entrega · ' . $host, $html, $text, $mailOpts, $dryRun));
+}
+
+// --------------------------------------------------------------- semanal ---
+if (isset($opts['weekly'])) {
+    $r = render_weekly_report($st);
+    $code = deliver($to, $r['subject'], $r['html'], $r['text'], $mailOpts, $dryRun);
+    if ($code === 0 && !$dryRun) {
+        write_atomic($cfg['state_dir'] . '/last_weekly.json',
+            json_encode(['at' => time(), 'to' => $to]), 0640);
+    }
+    exit($code);
+}
+
+// --------------------------------------------------------------- alertas ---
+if (isset($opts['alerts'])) {
+    if (empty($cfg['mail']['alerts'])) {
+        exit(0);
+    }
+
+    $minSev   = $cfg['mail']['alert_min_sev'] ?? 'warn';
+    $rank     = ['info' => 1, 'warn' => 2, 'crit' => 3];
+    $minRank  = $rank[$minSev] ?? 2;
+    $throttle = (int) ($cfg['mail']['alert_throttle'] ?? 86400);
+
+    $current = [];
+    foreach ($st['health']['findings'] ?? [] as $f) {
+        if (($rank[$f['sev']] ?? 0) >= $minRank) {
+            $current[$f['id']] = $f;
+        }
+    }
+
+    $histFile = $cfg['state_dir'] . '/alert_state.json';
+    $hist = is_readable($histFile) ? (json_decode((string) slurp($histFile), true) ?: []) : [];
+    $notified = $hist['notified'] ?? [];   // id => ['at'=>ts, 'sev'=>sev]
+    // Lo que ya avisó el vigilante rapido: si acaba de contarlo el, no se
+    // repite aqui. Los dos comparten fichero justamente para esto.
+    $watched  = $hist['watch'] ?? [];
+
+    $now   = time();
+    $fresh = [];
+    foreach ($current as $id => $f) {
+        $prev = $notified[$id] ?? null;
+        if ($prev === null && isset($watched[$id]['at'])
+            && ($now - (int) $watched[$id]['at']) < $throttle) {
+            continue;
+        }
+        $isNew = $prev === null;
+        // Reavisamos si la incidencia ha empeorado o si expiro el antirrepeticion
+        $worse = $prev !== null && ($rank[$f['sev']] ?? 0) > ($rank[$prev['sev']] ?? 0);
+        $stale = $prev !== null && ($now - (int) $prev['at']) > $throttle;
+        if ($isNew || $worse || $stale || isset($opts['force'])) {
+            $fresh[] = $f;
+        }
+    }
+
+    $resolved = [];
+    foreach ($notified as $id => $prev) {
+        if (!isset($current[$id])) {
+            $resolved[] = ['id' => $id, 'title' => $prev['title'] ?? $id];
+        }
+    }
+
+    if (!$fresh) {
+        // Aun sin novedades, actualizamos el estado para registrar lo resuelto
+        $hist['notified'] = array_intersect_key($notified, $current);
+        write_atomic($histFile, json_encode($hist), 0640);
+        fwrite(STDERR, "[centinela] sin incidencias nuevas; no se envia alerta\n");
+        exit(0);
+    }
+
+    $r = render_alert($st, $fresh, $resolved);
+    $mailOpts['priority'] = $r['priority'];
+    $code = deliver($to, $r['subject'], $r['html'], $r['text'], $mailOpts, $dryRun);
+
+    if ($code === 0 && !$dryRun) {
+        foreach ($fresh as $f) {
+            $notified[$f['id']] = ['at' => $now, 'sev' => $f['sev'], 'title' => $f['title']];
+        }
+        $hist['notified'] = array_intersect_key($notified, $current);
+        $hist['last_alert'] = $now;
+        write_atomic($histFile, json_encode($hist), 0640);
+    }
+    exit($code);
+}
+
+/** Entrega el correo o lo vuelca por pantalla en modo prueba. */
+function deliver(array $to, string $subject, string $html, string $text, array $opts, bool $dryRun): int
+{
+    if ($dryRun) {
+        fwrite(STDOUT, "=== Para: " . implode(', ', $to) . "\n=== Asunto: {$subject}\n\n{$text}\n");
+        // Nombre impredecible y creado en exclusiva por tempnam(). Un nombre
+        // fijo en /tmp permitiria a un usuario local dejar alli un enlace
+        // simbolico y hacer que root escribiese donde quisiera.
+        $f = @tempnam(sys_get_temp_dir(), 'centinela-preview-');
+        if ($f === false) {
+            fwrite(STDOUT, "\n[no se pudo crear el fichero de vista previa]\n");
+            return 0;
+        }
+        @chmod($f, 0600);
+        file_put_contents($f, $html);
+        fwrite(STDOUT, "\n[vista previa HTML: {$f}]\n");
+        return 0;
+    }
+    $res = send_mail($to, $subject, $html, $text, $opts);
+
+    // Dejamos constancia del resultado para que el panel pueda avisar si
+    // los correos dejan de salir: una herramienta que avisa por correo no
+    // debe fallar en silencio.
+    write_atomic(state_dir() . '/last_send.json', json_encode([
+        'at'      => time(),
+        'to'      => $to,
+        'subject' => $subject,
+        'ok'      => $res['ok'],
+        'error'   => $res['error'],
+    ]), 0640);
+
+    if (!$res['ok']) {
+        fwrite(STDERR, "[centinela] fallo al enviar: {$res['error']}\n");
+        return 1;
+    }
+    fwrite(STDERR, "[centinela] enviado a " . implode(', ', $to) . "\n");
+    return 0;
+}

@@ -1,0 +1,271 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Centinela - ejecutor de acciones pedidas desde el panel.
+ *
+ * Corre como root, disparado por centinela-action.path cuando la web deja una
+ * peticion en el directorio de cola. La web nunca ejecuta nada privilegiado:
+ * solo escribe un fichero, y aqui se decide si esa peticion es admisible.
+ *
+ * Todo lo que llega se trata como sospechoso: si la capa web se viera
+ * comprometida, esto es lo unico que la separa de fail2ban. De ahi que la
+ * direccion se valide contra la lista de intocables antes de tocar nada, y que
+ * el jail tenga que existir de verdad en el fail2ban que corre ahora mismo.
+ */
+
+declare(strict_types=1);
+
+$base = dirname(__DIR__);
+require $base . '/lib/util.php';
+require $base . '/lib/config.php';
+
+$opts = getopt('', ['state:', 'group:', 'quiet', 'help']);
+if (isset($opts['help'])) {
+    fwrite(STDOUT, "Uso: centinela-action [--state DIR] [--group GRUPO] [--quiet]\n");
+    exit(0);
+}
+if (posix_geteuid() !== 0) {
+    fwrite(STDERR, "centinela-action debe ejecutarse como root.\n");
+    exit(1);
+}
+
+$stateDir = rtrim((string) ($opts['state'] ?? '/var/lib/centinela'), '/');
+$group    = $opts['group'] ?? null;
+$quiet    = isset($opts['quiet']);
+state_dir($stateDir);
+
+/** Peticiones atendidas por pasada. */
+const CENT_ACTION_MAX = 20;
+
+/** Una peticion mas vieja que esto ya no le interesa a nadie. */
+const CENT_ACTION_TTL = 300;
+
+/** Resultados que se conservan para que el panel los lea. */
+const CENT_ACTION_KEEP = 100;
+
+$cfg      = load_config();
+$queueDir = $stateDir . '/queue/actions';
+
+/** Direcciones que nunca se bloquean, pase lo que pase. */
+function protected_ips(array $cfg): array
+{
+    $list = [];
+
+    // Las del propio servidor y sus redes: bloquearlas es dispararse al pie.
+    foreach (explode("\n", sh("ip -o addr show scope global 2>/dev/null | awk '{print \$4}'")) as $cidr) {
+        $cidr = trim($cidr);
+        if ($cidr !== '') {
+            $list[] = $cidr;
+        }
+    }
+    // Las que el administrador haya declarado de confianza para entrar al panel.
+    foreach ((array) ($cfg['ip_allowlist'] ?? []) as $c) {
+        $list[] = (string) $c;
+    }
+    // Y una lista explicita para lo que no encaje en lo anterior.
+    foreach ((array) ($cfg['actions']['never_ban'] ?? []) as $c) {
+        $list[] = (string) $c;
+    }
+    return array_values(array_filter($list));
+}
+
+/** ¿Cae $ip dentro de alguno de los CIDR (o direcciones sueltas) de la lista? */
+function ip_matches(string $ip, array $cidrs): bool
+{
+    $ipBin = @inet_pton($ip);
+    if ($ipBin === false) {
+        return true;   // si no se puede ni interpretar, se rechaza
+    }
+    foreach ($cidrs as $cidr) {
+        if (!str_contains($cidr, '/')) {
+            if ($cidr === $ip) {
+                return true;
+            }
+            continue;
+        }
+        [$net, $bits] = explode('/', $cidr, 2);
+        $netBin = @inet_pton($net);
+        if ($netBin === false || strlen($netBin) !== strlen($ipBin)) {
+            continue;
+        }
+        $bits  = max(0, min(strlen($ipBin) * 8, (int) $bits));
+        $bytes = intdiv($bits, 8);
+        $rem   = $bits % 8;
+        if ($bytes > 0 && strncmp($ipBin, $netBin, $bytes) !== 0) {
+            continue;
+        }
+        if ($rem === 0) {
+            return true;
+        }
+        $mask = ~((1 << (8 - $rem)) - 1) & 0xFF;
+        if ((ord($ipBin[$bytes]) & $mask) === (ord($netBin[$bytes]) & $mask)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Jails que existen ahora mismo en el fail2ban en marcha. */
+function live_jails(): array
+{
+    $out = run(['/usr/bin/fail2ban-client', 'status'], 20)['out'];
+    if (!preg_match('/Jail list:\s*(.*)$/m', $out, $m)) {
+        return [];
+    }
+    return array_values(array_filter(array_map('trim', explode(',', $m[1]))));
+}
+
+/** Deja constancia del resultado para el panel y para la auditoria. */
+function record(string $stateDir, ?string $group, array $res, bool $quiet): void
+{
+    $f    = $stateDir . '/actions.json';
+    $prev = is_file($f) ? (json_decode((string) slurp($f), true) ?: []) : [];
+    $prev[] = $res;
+    if (count($prev) > CENT_ACTION_KEEP) {
+        $prev = array_slice($prev, -CENT_ACTION_KEEP);
+    }
+    write_atomic($f, json_encode($prev, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0640, $group);
+
+    // Registro plano ademas del JSON: esto es traza de auditoria y conviene
+    // que sobreviva aunque el fichero de resultados se recorte o se pierda.
+    $line = sprintf(
+        "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+        date('c'),
+        $res['action'],
+        $res['ip'],
+        $res['jail'] ?? '-',
+        $res['ok'] ? 'ok' : 'error',
+        str_replace(["\t", "\n", "\r"], ' ', (string) ($res['user'] ?? '-')),
+        str_replace(["\t", "\n", "\r"], ' ', (string) ($res['detail'] ?? ''))
+    );
+    $log = $stateDir . '/actions.log';
+    @file_put_contents($log, $line, FILE_APPEND | LOCK_EX);
+    @chmod($log, 0640);
+    if ($group !== null) {
+        @chgrp($log, $group);
+    }
+    if (!$quiet) {
+        clog(trim($line));
+    }
+}
+
+// -------------------------------------------------------------- proceso ----
+$pending = glob($queueDir . '/*.json') ?: [];
+sort($pending);
+
+// Lo que pase del tope se descarta: una avalancha de peticiones no puede
+// convertirse en una avalancha de ordenes a fail2ban.
+foreach (array_slice($pending, CENT_ACTION_MAX) as $extra) {
+    @unlink($extra);
+}
+$files = array_slice($pending, 0, CENT_ACTION_MAX);
+if (!$files) {
+    exit(0);
+}
+
+$protected = protected_ips($cfg);
+$jails     = live_jails();
+$defJail   = (string) ($cfg['actions']['jail'] ?? 'plesk-permanent-ban');
+$hechas    = 0;
+
+foreach ($files as $file) {
+    // Solo ficheros regulares: el directorio lo puede escribir el usuario web,
+    // asi que un enlace simbolico colado ahi no debe hacer que leamos como root
+    // algo de fuera de la cola.
+    if (!is_file($file) || is_link($file)) {
+        @unlink($file);
+        continue;
+    }
+    $raw = slurp($file, 8192);
+    // Se borra siempre y lo primero: si algo falla mas abajo, la peticion no
+    // puede quedarse ahi haciendo que el .path nos llame en bucle.
+    @unlink($file);
+
+    $req = $raw !== null ? json_decode($raw, true) : null;
+    if (!is_array($req)) {
+        continue;
+    }
+
+    $res = [
+        'id'     => (string) preg_replace('/[^a-f0-9]/i', '', (string) ($req['id'] ?? '')),
+        'at'     => time(),
+        'action' => (string) ($req['action'] ?? ''),
+        'ip'     => (string) ($req['ip'] ?? ''),
+        'jail'   => null,
+        'user'   => substr((string) ($req['user'] ?? ''), 0, 64),
+        'origin' => substr((string) ($req['origin'] ?? ''), 0, 45),
+        'ok'     => false,
+        'detail' => '',
+    ];
+
+    if (!in_array($res['action'], ['ban', 'unban'], true)) {
+        $res['detail'] = 'accion no reconocida';
+        record($stateDir, $group, $res, $quiet);
+        continue;
+    }
+    if ((time() - (int) ($req['at'] ?? 0)) > CENT_ACTION_TTL) {
+        $res['detail'] = 'peticion caducada';
+        record($stateDir, $group, $res, $quiet);
+        continue;
+    }
+    if (!filter_var($res['ip'], FILTER_VALIDATE_IP)) {
+        $res['detail'] = 'la direccion no es valida';
+        record($stateDir, $group, $res, $quiet);
+        continue;
+    }
+
+    if ($res['action'] === 'ban') {
+        if (!filter_var($res['ip'], FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            $res['detail'] = 'es una direccion privada o reservada; no se bloquea';
+            record($stateDir, $group, $res, $quiet);
+            continue;
+        }
+        if (ip_matches($res['ip'], $protected)) {
+            $res['detail'] = 'direccion protegida: red del servidor o lista de confianza';
+            record($stateDir, $group, $res, $quiet);
+            continue;
+        }
+
+        $jail = (string) ($req['jail'] ?? $defJail);
+        if (!in_array($jail, $jails, true)) {
+            // Si el jail configurado no existe, no improvisamos otro: es
+            // preferible fallar de forma visible a bloquear donde no toca.
+            $res['jail']   = $jail;
+            $res['detail'] = $jails
+                ? "el jail «{$jail}» no existe en fail2ban"
+                : 'fail2ban no responde o no tiene jails activos';
+            record($stateDir, $group, $res, $quiet);
+            continue;
+        }
+        $res['jail'] = $jail;
+
+        $r = run(['/usr/bin/fail2ban-client', 'set', $jail, 'banip', $res['ip']], 25);
+        $res['ok']     = $r['ok'];
+        $res['detail'] = $r['ok']
+            ? 'bloqueada en ' . $jail . (trim($r['out']) === '0' ? ' (ya lo estaba)' : '')
+            : (trim($r['err'] ?: $r['out']) ?: 'fail2ban rechazo la orden');
+    } else {
+        // Desbloquear sin jail: la saca de todos, que es lo que espera quien
+        // pulsa el boton sin saber en cual de ellos cayo.
+        $r = run(['/usr/bin/fail2ban-client', 'unban', $res['ip']], 25);
+        $res['ok']     = $r['ok'];
+        $res['detail'] = $r['ok']
+            ? 'desbloqueada en todos los jails'
+            : (trim($r['err'] ?: $r['out']) ?: 'fail2ban rechazo la orden');
+    }
+
+    record($stateDir, $group, $res, $quiet);
+    if ($res['ok']) {
+        $hechas++;
+    }
+}
+
+// Tras cambiar bloqueos, lo que ve el panel se ha quedado viejo: se pide una
+// recogida para que la tabla refleje enseguida lo que acaba de pasar.
+if ($hechas > 0) {
+    @file_put_contents(
+        $stateDir . '/queue/recheck.req',
+        json_encode(['at' => time(), 'user' => 'centinela-action'])
+    );
+}
+exit(0);

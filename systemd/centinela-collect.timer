@@ -1,0 +1,11 @@
+[Unit]
+Description=Centinela - recogida periodica del estado
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=__INTERVAL__
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

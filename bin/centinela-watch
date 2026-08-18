@@ -1,0 +1,194 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Centinela - vigilante de incidentes.
+ *
+ * El colector completo pasa cada pocos minutos y mide todo el servidor. Esto
+ * es lo contrario: corre cada minuto y solo mira lo que puede convertirse en
+ * un incidente ahora mismo (log de autenticacion, logs web y bloqueos), que
+ * son justo los modulos incrementales y baratos.
+ *
+ * Su unico cometido es avisar antes: no toca state.json ni el panel, que
+ * siguen viviendo del colector. Comparte con el el mismo registro de avisos
+ * enviados, de modo que una incidencia no se notifica dos veces.
+ */
+
+declare(strict_types=1);
+
+$base = dirname(__DIR__);
+require $base . '/lib/util.php';
+require $base . '/lib/config.php';
+require $base . '/lib/score.php';
+require $base . '/lib/mailer.php';
+require $base . '/lib/report.php';
+require $base . '/lib/collect_security.php';
+require $base . '/lib/collect_attacks.php';
+require $base . '/lib/collect_web.php';
+require $base . '/lib/guard.php';
+
+$opts = getopt('', ['state:', 'group:', 'dry-run', 'quiet', 'help']);
+if (isset($opts['help'])) {
+    fwrite(STDOUT, "Uso: centinela-watch [--state DIR] [--group GRUPO] [--dry-run] [--quiet]\n"
+        . "  Evalua los modulos rapidos y avisa si aparece una incidencia critica.\n");
+    exit(0);
+}
+if (posix_geteuid() !== 0) {
+    fwrite(STDERR, "centinela-watch debe ejecutarse como root.\n");
+    exit(1);
+}
+
+$stateDir = rtrim((string) ($opts['state'] ?? '/var/lib/centinela'), '/');
+$group    = $opts['group'] ?? null;
+$dryRun   = isset($opts['dry-run']);
+$quiet    = isset($opts['quiet']);
+state_dir($stateDir);
+
+$cfg = load_config();
+if (empty($cfg['mail']['alerts']) && !$dryRun) {
+    exit(0);
+}
+
+/*
+ * El vigilante y el colector leen y escriben los mismos almacenes de eventos.
+ * Sin exclusion mutua, dos lecturas incrementales solapadas se pisarian el
+ * desplazamiento y se perderian intentos. Si el colector esta trabajando, este
+ * pase sobra: su recogida es mas completa y llega igual de fresca.
+ */
+$lockFile = $stateDir . '/collect.lock';
+$lock     = @fopen($lockFile, 'c');
+if ($lock === false) {
+    fwrite(STDERR, "[centinela] no se pudo abrir el cerrojo {$lockFile}\n");
+    exit(1);
+}
+@chmod($lockFile, 0640);
+if (!flock($lock, LOCK_EX | LOCK_NB)) {
+    if (!$quiet) {
+        clog('el colector esta en marcha; el vigilante se salta este pase');
+    }
+    exit(0);
+}
+
+// ------------------------------------------------------------- modulos ----
+$report = [];
+$all    = [];
+
+foreach ([
+    'attacks' => 'collect_attacks',
+    'web'     => 'collect_web',
+    'guard'   => 'collect_guard',
+] as $clave => $fn) {
+    try {
+        $datos = $fn();
+        $report[$clave] = $datos;
+        foreach ($datos['findings'] ?? [] as $f) {
+            $all[] = $f;
+        }
+    } catch (Throwable $e) {
+        clog("vigilante: el modulo {$clave} fallo: " . $e->getMessage());
+    }
+}
+
+// Para el cruce basta el mapa de bloqueados: interrogar jail por jail cuesta
+// mas que todo lo demas junto y aqui no aporta nada.
+$banned = fail2ban_banned_map();
+$report['fail2ban'] = [
+    'installed'  => have('fail2ban-client'),
+    'active'     => $banned !== [] || trim(sh('systemctl is-active fail2ban 2>/dev/null')) === 'active',
+    'banned_map' => $banned,
+];
+cross_reference_bans($report, $all);
+
+flock($lock, LOCK_UN);
+fclose($lock);
+
+// ------------------------------------------------------------- avisos -----
+$rank     = ['info' => 1, 'warn' => 2, 'crit' => 3];
+$throttle = (int) ($cfg['mail']['alert_throttle_crit'] ?? 3600);
+
+// Solo lo critico: el resto puede esperar al ciclo normal del colector.
+$criticas = [];
+foreach ($all as $f) {
+    if (($rank[$f['sev']] ?? 0) >= 3) {
+        $criticas[$f['id']] = $f;
+    }
+}
+if (!$criticas) {
+    exit(0);
+}
+
+$histFile = $stateDir . '/alert_state.json';
+$hist     = is_readable($histFile) ? (json_decode((string) slurp($histFile), true) ?: []) : [];
+$notified = $hist['notified'] ?? [];   // lo que ya conto el colector
+$watched  = $hist['watch'] ?? [];      // lo que ya conto este vigilante
+
+$ahora  = time();
+$nuevas = [];
+foreach ($criticas as $id => $f) {
+    $ultimo = max(
+        (int) ($notified[$id]['at'] ?? 0),
+        (int) ($watched[$id]['at'] ?? 0)
+    );
+    if ($ultimo === 0 || ($ahora - $ultimo) > $throttle) {
+        $nuevas[] = $f;
+    }
+}
+
+if (!$nuevas) {
+    exit(0);
+}
+
+// Se reutiliza el mismo correo de alerta que el colector: mismo formato, misma
+// guia dentro, para que quien lo recibe no tenga que aprender dos cosas.
+$estado = read_state_file($stateDir);
+$r = render_alert($estado, $nuevas, []);
+$asunto = '[urgente] ' . $r['subject'];
+
+if ($dryRun) {
+    fwrite(STDOUT, "=== Asunto: {$asunto}\n\n{$r['text']}\n");
+    exit(0);
+}
+
+$res = send_mail(
+    (array) ($cfg['mail']['to'] ?? []),
+    $asunto,
+    $r['html'],
+    $r['text'],
+    [
+        'from'      => $cfg['mail']['from'] ?? null,
+        'from_name' => $cfg['mail']['from_name'] ?? 'Centinela',
+        'host'      => $estado['system']['hostname'] ?? php_uname('n'),
+        'priority'  => $r['priority'],
+    ]
+);
+
+if (!$res['ok']) {
+    clog('vigilante: fallo al enviar el aviso: ' . $res['error']);
+    exit(1);
+}
+
+foreach ($nuevas as $f) {
+    $watched[$f['id']] = ['at' => $ahora, 'sev' => $f['sev'], 'title' => $f['title']];
+}
+// Lo que lleva mas de un dia sin verse ya no hace falta recordarlo aqui.
+$watched = array_filter($watched, fn($x) => ($ahora - (int) ($x['at'] ?? 0)) < 86400);
+
+$hist['watch']      = $watched;
+$hist['last_alert'] = $ahora;
+write_atomic($histFile, json_encode($hist), 0640, $group);
+
+clog('vigilante: avisadas ' . count($nuevas) . ' incidencia(s) critica(s)');
+exit(0);
+
+/**
+ * Lee el ultimo estado completo, que es de donde el correo saca el nombre del
+ * servidor y la nota. Si aun no hay ninguno, se apana con lo minimo.
+ */
+function read_state_file(string $stateDir): array
+{
+    $f = $stateDir . '/state.json';
+    $d = is_readable($f) ? json_decode((string) slurp($f), true) : null;
+    if (!is_array($d)) {
+        $d = ['system' => ['hostname' => php_uname('n')], 'health' => ['score' => 0, 'grade' => '?']];
+    }
+    return $d;
+}

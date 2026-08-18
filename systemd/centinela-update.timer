@@ -1,0 +1,12 @@
+[Unit]
+Description=Centinela - comprobacion diaria de actualizaciones
+
+[Timer]
+# Una vez al dia, a una hora tranquila, con dispersion para no golpear a
+# GitHub a la vez desde muchas instalaciones.
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

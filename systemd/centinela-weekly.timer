@@ -1,0 +1,11 @@
+[Unit]
+Description=Centinela - envio semanal del informe de salud
+
+[Timer]
+OnCalendar=__SCHEDULE__
+# Si el servidor estaba apagado a la hora prevista, se envia al arrancar.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

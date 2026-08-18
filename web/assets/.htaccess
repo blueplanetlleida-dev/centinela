@@ -1,0 +1,7 @@
+# Centinela - los estaticos no se guardan en el navegador.
+# Va entre IfModule para no romper la configuracion si falta mod_headers.
+<IfModule mod_headers.c>
+    Header set Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+</IfModule>

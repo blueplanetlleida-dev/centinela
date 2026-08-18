@@ -1,0 +1,16 @@
+[Unit]
+Description=Centinela - actualizacion automatica desde GitHub
+Documentation=file://__PREFIX__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=__PHP__ __PREFIX__/bin/centinela-update --quiet --state __STATE__
+Nice=10
+TimeoutStartSec=600
+# Necesita root para escribir en /usr/local/centinela y recargar servicios.
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

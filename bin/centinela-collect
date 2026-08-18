@@ -1,0 +1,185 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Centinela - colector. Se ejecuta como root desde un systemd timer.
+ *
+ * Recoge todo el estado del servidor y lo deja en un unico JSON que la capa
+ * web se limita a leer. La web nunca ejecuta comandos privilegiados: si la
+ * aplicacion PHP se viera comprometida, no heredaria permisos de root.
+ */
+
+declare(strict_types=1);
+
+$base = dirname(__DIR__);
+require $base . '/lib/util.php';
+require $base . '/lib/config.php';
+require $base . '/lib/score.php';
+require $base . '/lib/collect_system.php';
+require $base . '/lib/collect_plesk.php';
+require $base . '/lib/collect_security.php';
+require $base . '/lib/collect_attacks.php';
+require $base . '/lib/collect_mail.php';
+require $base . '/lib/collect_web.php';
+require $base . '/lib/guard.php';
+require $base . '/lib/sysout.php';
+
+// Opciones
+$opts    = getopt('', ['state:', 'out:', 'group:', 'quiet', 'once', 'fresh', 'help']);
+if (isset($opts['help'])) {
+    fwrite(STDOUT, "Uso: centinela-collect [--state DIR] [--out FICHERO] [--group GRUPO] [--fresh] [--quiet]\n"
+        . "  --fresh  ignora la cache de modulos y vuelve a medirlo todo\n");
+    exit(0);
+}
+
+if (posix_geteuid() !== 0) {
+    fwrite(STDERR, "centinela-collect debe ejecutarse como root.\n");
+    exit(1);
+}
+
+$stateDir = rtrim((string) ($opts['state'] ?? '/var/lib/centinela'), '/');
+$outFile  = (string) ($opts['out'] ?? $stateDir . '/state.json');
+$group    = $opts['group'] ?? null;
+$quiet    = isset($opts['quiet']);
+
+// Recomprobacion a peticion: nada de valores guardados, se mide todo de nuevo.
+cache_bypass(isset($opts['fresh']));
+
+state_dir($stateDir);
+@mkdir($stateDir . '/cache', 0750, true);
+
+/*
+ * El vigilante de incidentes lee los mismos almacenes incrementales cada
+ * minuto. Sin cerrojo, dos lecturas solapadas se pisarian el desplazamiento
+ * del log y se perderian intentos. Aqui se espera, porque esta recogida es la
+ * que alimenta el panel y no puede saltarse.
+ */
+$lockFh = @fopen($stateDir . '/collect.lock', 'c');
+if ($lockFh !== false) {
+    @chmod($stateDir . '/collect.lock', 0640);
+    flock($lockFh, LOCK_EX);
+}
+
+$t0     = microtime(true);
+$report = ['schema' => 1, 'version' => CENT_VERSION, 'generated_at' => time()];
+$all    = [];
+
+/** Ejecuta un modulo aislando sus errores: un fallo no tumba el resto. */
+function module(string $key, callable $fn, array &$report, array &$all, bool $quiet, int $ttl = 0): void
+{
+    $t = microtime(true);
+    try {
+        // Los modulos caros se refrescan con menos frecuencia que el resto.
+        $data = $ttl > 0 ? cached('mod_' . $key, $ttl, $fn) : $fn();
+        if (!is_array($data)) {
+            throw new RuntimeException('el modulo no devolvio datos');
+        }
+        $report[$key] = $data;
+        foreach ($data['findings'] ?? [] as $f) {
+            $all[] = $f;
+        }
+        $report['_timing'][$key] = round((microtime(true) - $t) * 1000);
+    } catch (Throwable $e) {
+        $report[$key] = ['error' => $e->getMessage()];
+        $all[] = finding("mod.{$key}", SEV_WARN, "Fallo al recoger el modulo {$key}", $e->getMessage(),
+            'Revisar el error en el registro del colector',
+            guide(
+                'Ese apartado del panel se queda sin datos, asi que lo que vigila deja de vigilarse: no es que '
+                . 'este bien, es que no se sabe.',
+                [
+                    ['do' => 'Lee el error completo del ultimo intento',
+                     'cmd' => 'journalctl -u centinela-collect -n 60 --no-pager'],
+                    ['do' => 'Reproduce la recogida a mano para ver donde falla',
+                     'cmd' => 'centinela-collect --fresh --out /tmp/centinela-prueba.json'],
+                    ['do' => 'Si falla por un binario que ya no esta, instalalo o revisa el PATH del servicio',
+                     'cmd' => 'which dig mtr fail2ban-client postqueue plesk'],
+                ],
+                'systemctl start centinela-collect.service && journalctl -u centinela-collect -n 20 --no-pager'
+            ));
+        clog("modulo {$key} fallo: " . $e->getMessage());
+    }
+    if (!$quiet) {
+        clog(sprintf('%-14s %6d ms', $key, round((microtime(true) - $t) * 1000)));
+    }
+}
+
+module('system',    'collect_system',            $report, $all, $quiet);
+module('updates',   'collect_updates',           $report, $all, $quiet, 900);   // apt -s upgrade es lento
+module('services',  'collect_services',          $report, $all, $quiet);
+module('ports',     'collect_ports',             $report, $all, $quiet);
+module('plesk',     'collect_plesk',             $report, $all, $quiet);
+module('domains',   'collect_domains',           $report, $all, $quiet, 1800);
+module('certs',     'collect_certificates',      $report, $all, $quiet, 3600);
+module('php',       'collect_php',               $report, $all, $quiet, 3600);
+module('secprod',   'collect_security_products', $report, $all, $quiet, 600);
+module('fail2ban',  'collect_fail2ban',          $report, $all, $quiet);
+module('firewall',  'collect_firewall',          $report, $all, $quiet);
+module('ssh',       'collect_ssh',               $report, $all, $quiet);
+module('accounts',  'collect_accounts',          $report, $all, $quiet);
+module('attacks',   'collect_attacks',           $report, $all, $quiet);
+module('mail',      'collect_mail',              $report, $all, $quiet, 1800);
+module('web',       'collect_web',               $report, $all, $quiet);
+module('guard',     'collect_guard',             $report, $all, $quiet);
+
+// Hay analisis que necesitan el resultado de dos modulos a la vez: quien ataca
+// (log de autenticacion) y a quien retiene fail2ban. Se hace aqui, cuando ya
+// estan todos recogidos, y antes de calcular la nota para que cuente.
+cross_reference_bans($report, $all);
+
+// Los hallazgos ya viven dentro de cada modulo; en la raiz dejamos el resumen
+$report['health']       = compute_score($all);
+$report['collect_ms']   = round((microtime(true) - $t0) * 1000);
+
+// Exportacion opcional a un syslog remoto: resumen de salud y transiciones
+// de incidencias. Nunca puede tumbar la recogida.
+try {
+    sysout_export($report);
+} catch (Throwable $e) {
+    clog('syslog remoto fallo: ' . $e->getMessage());
+}
+
+// Historico del score para dibujar la tendencia
+$histFile = $stateDir . '/score_history.json';
+$hist     = is_file($histFile) ? (json_decode((string) slurp($histFile), true) ?: []) : [];
+$hist[]   = ['t' => time(), 's' => $report['health']['score'], 'c' => $report['health']['counts']['crit']];
+$cut      = time() - 30 * 86400;
+$hist     = array_values(array_filter($hist, fn($h) => $h['t'] >= $cut));
+// Como maximo una muestra cada 10 minutos
+$thinned = [];
+$last = 0;
+foreach ($hist as $h) {
+    if ($h['t'] - $last >= 600) {
+        $thinned[] = $h;
+        $last = $h['t'];
+    }
+}
+write_atomic($histFile, json_encode($thinned), 0640, $group);
+$report['score_history'] = $thinned;
+
+$json = json_encode($report, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+if ($json === false) {
+    clog('no se pudo serializar el informe');
+    exit(1);
+}
+
+if (!write_atomic($outFile, $json, 0640, $group)) {
+    clog("no se pudo escribir {$outFile}");
+    exit(1);
+}
+
+if ($lockFh !== false) {
+    flock($lockFh, LOCK_UN);
+    fclose($lockFh);
+}
+
+if (!$quiet) {
+    clog(sprintf(
+        'listo en %d ms - score %d (%s) - %d criticos, %d avisos - %s',
+        $report['collect_ms'],
+        $report['health']['score'],
+        $report['health']['grade'],
+        $report['health']['counts']['crit'],
+        $report['health']['counts']['warn'],
+        human_bytes((float) strlen($json))
+    ));
+}
+exit(0);

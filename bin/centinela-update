@@ -1,0 +1,314 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Centinela - actualizador automatico desde GitHub.
+ *
+ * Comprueba la ultima version publicada como «release» en el repositorio
+ * configurado y, si es mas nueva que la instalada, la descarga, verifica,
+ * aplica con install.sh --upgrade y comprueba que el panel sigue en pie. Si
+ * algo falla, deja el codigo anterior intacto.
+ *
+ * Corre como root desde un timer. La politica (repo, canal, si aplicar solo o
+ * tambien avisar) sale de la seccion «update» de /etc/centinela/config.php.
+ *
+ *   centinela-update            comprueba y actua segun la politica
+ *   centinela-update --check    solo dice si hay version nueva, no aplica
+ *   centinela-update --force    aplica aunque la politica sea «solo avisar»
+ */
+
+declare(strict_types=1);
+
+$base = dirname(__DIR__);
+require $base . '/lib/util.php';
+require $base . '/lib/config.php';
+
+$opts = getopt('', ['check', 'force', 'quiet', 'help']);
+if (isset($opts['help'])) {
+    fwrite(STDOUT, "Uso: centinela-update [--check] [--force] [--quiet]\n");
+    exit(0);
+}
+if (posix_geteuid() !== 0) {
+    fwrite(STDERR, "centinela-update debe ejecutarse como root.\n");
+    exit(1);
+}
+$quiet = isset($opts['quiet']);
+$say = function (string $m) use ($quiet) { if (!$quiet) { clog('update: ' . $m); } };
+
+$cfg  = load_config();
+$up   = $cfg['update'] ?? [];
+$repo = trim((string) ($up['repo'] ?? ''));
+$modo = (string) ($up['mode'] ?? 'notify');   // 'auto' | 'patch' | 'notify'
+$pre  = (bool) ($up['prereleases'] ?? false);
+
+if ($repo === '' || !preg_match('#^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$#', $repo)) {
+    $say('sin repositorio configurado (update.repo en config.php); no se hace nada');
+    exit(0);
+}
+
+// -------------------------------------------------- ultima version publicada
+$api = "https://api.github.com/repos/{$repo}/releases" . ($pre ? '?per_page=5' : '/latest');
+$json = gh_get($api);
+if ($json === null) {
+    $say('no se pudo consultar GitHub (¿repo privado, sin releases, o red caida?)');
+    exit(0);
+}
+$release = $pre ? (is_array($json) ? ($json[0] ?? null) : null) : $json;
+if (!is_array($release) || empty($release['tag_name'])) {
+    $say('el repositorio no tiene releases todavia');
+    exit(0);
+}
+
+$ultima   = ltrim((string) $release['tag_name'], 'vV');
+$instalada = CENT_VERSION;
+$notas    = trim((string) ($release['body'] ?? ''));
+
+if (vnum($ultima) <= vnum($instalada)) {
+    $say("al dia (instalada {$instalada}, ultima {$ultima})");
+    exit(0);
+}
+$say("hay version nueva: {$instalada} -> {$ultima}");
+
+// Guardamos el aviso para que el panel lo muestre, se aplique o no.
+$avisoFile = state_dir() . '/update_available.json';
+write_atomic($avisoFile, json_encode([
+    'current' => $instalada, 'latest' => $ultima,
+    'notes'   => mb_substr($notas, 0, 4000), 'at' => time(),
+    'url'     => (string) ($release['html_url'] ?? ''),
+], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 0640);
+
+// -------------------------------------------------- ¿toca aplicar?
+$esParche = false;
+$vi = array_pad(array_map('intval', explode('.', $instalada)), 3, 0);
+$vu = array_pad(array_map('intval', explode('.', $ultima)), 3, 0);
+$esParche = ($vu[0] === $vi[0] && $vu[1] === $vi[1] && $vu[2] > $vi[2]);
+
+$aplicar = isset($opts['force'])
+    || $modo === 'auto'
+    || ($modo === 'patch' && $esParche);
+
+if (isset($opts['check']) || !$aplicar) {
+    $say(isset($opts['check']) ? 'solo comprobacion, no se aplica'
+        : "politica «{$modo}»: se avisa pero no se aplica automaticamente");
+    // Aviso por correo, reutilizando el emisor del informe si esta disponible.
+    notify_update($cfg, $instalada, $ultima, $notas);
+    exit(0);
+}
+
+// -------------------------------------------------- descargar y verificar
+$tar = (string) ($release['tarball_url'] ?? "https://api.github.com/repos/{$repo}/tarball/" . $release['tag_name']);
+$tmp = '/tmp/centinela-update-' . bin2hex(random_bytes(6));
+@mkdir($tmp, 0700, true);
+$tgz = $tmp . '/src.tar.gz';
+
+if (!gh_download($tar, $tgz) || !is_file($tgz) || filesize($tgz) < 1000) {
+    $say('fallo al descargar el codigo nuevo');
+    rrmdir($tmp);
+    exit(1);
+}
+
+// Verificacion opcional por checksum: si la release publica un SHA256SUMS con
+// una linea «<sha256>  centinela-<version>.tar.gz», se comprueba. Sin el, se
+// confia en HTTPS + la identidad del repositorio (que es quien controla root).
+$sha = sha256_de_release($release, "centinela-{$ultima}.tar.gz");
+if ($sha !== null) {
+    $real = hash_file('sha256', $tgz);
+    if (!hash_equals($sha, $real)) {
+        $say("checksum NO coincide (esperado {$sha}, obtenido {$real}); se aborta");
+        rrmdir($tmp);
+        exit(1);
+    }
+    $say('checksum verificado');
+}
+
+// -------------------------------------------------- extraer
+if (run(['/bin/tar', 'xzf', $tgz, '-C', $tmp], 60)['ok'] !== true) {
+    $say('no se pudo extraer el paquete');
+    rrmdir($tmp);
+    exit(1);
+}
+// GitHub empaqueta dentro de una carpeta «owner-repo-<hash>»
+$dirs = glob($tmp . '/*', GLOB_ONLYDIR) ?: [];
+$src  = $dirs[0] ?? '';
+if ($src === '' || !is_file($src . '/install.sh')) {
+    $say('el paquete no tiene la forma esperada (falta install.sh)');
+    rrmdir($tmp);
+    exit(1);
+}
+
+// -------------------------------------------------- copia de seguridad
+$prefix  = '/usr/local/centinela';
+$docroot = trim((string) slurp('/etc/centinela/.docroot'));
+$stamp   = date('Ymd-His');
+$backDir = '/var/lib/centinela/rollback';
+@mkdir($backDir, 0750, true);
+$backPrefix = "{$backDir}/prefix-{$stamp}";
+$backWeb    = "{$backDir}/web-{$stamp}.tar.gz";
+
+run(['/bin/cp', '-a', $prefix, $backPrefix], 60);
+if ($docroot !== '' && is_dir($docroot)) {
+    run(['/bin/tar', 'czf', $backWeb, '-C', dirname($docroot), basename($docroot)], 120);
+}
+$say("copia de seguridad en {$backPrefix}");
+
+// -------------------------------------------------- aplicar
+$say("aplicando {$ultima} con install.sh --upgrade");
+chmod($src . '/install.sh', 0755);
+$res = run(['/bin/bash', $src . '/install.sh', '--upgrade'], 300);
+$ok  = $res['ok'];
+
+// -------------------------------------------------- comprobacion de salud
+if ($ok) {
+    $ok = salud_ok($say);
+}
+
+if (!$ok) {
+    $say('la actualizacion o su comprobacion de salud han fallado: revirtiendo');
+    // Restaurar el codigo privilegiado
+    run(['/usr/bin/rsync', '-a', '--delete', $backPrefix . '/', $prefix . '/'], 60);
+    if (!is_dir($prefix) || !is_file($prefix . '/bin/centinela-collect')) {
+        // rsync puede no estar; copia cruda de reserva
+        run(['/bin/cp', '-a', $backPrefix, $prefix], 60);
+    }
+    // Restaurar la web
+    if ($docroot !== '' && is_file($backWeb)) {
+        run(['/bin/tar', 'xzf', $backWeb, '-C', dirname($docroot)], 120);
+    }
+    // Recargar PHP para descartar el opcache de la version rota
+    foreach (glob('/opt/plesk/php/*/sbin/php-fpm') ?: [] as $_) { /* no-op */ }
+    run(['/usr/bin/systemctl', 'reload-or-restart', 'plesk-php84-fpm'], 30);
+    $say('revertido a ' . $instalada);
+    log_update($instalada, $ultima, 'rollback');
+    rrmdir($tmp);
+    exit(1);
+}
+
+$say("actualizado correctamente a {$ultima}");
+@unlink($avisoFile);
+log_update($instalada, $ultima, 'ok');
+notify_update($cfg, $instalada, $ultima, $notas, true);
+rrmdir($tmp);
+exit(0);
+
+// ===========================================================================
+// Ayudantes
+// ===========================================================================
+
+/** GET a la API de GitHub devolviendo JSON, o null. */
+function gh_get(string $url): ?array
+{
+    $ctx = stream_context_create(['http' => [
+        'method' => 'GET', 'timeout' => 15,
+        'header' => "Accept: application/vnd.github+json\r\nUser-Agent: Centinela-Updater\r\n",
+        'ignore_errors' => true,
+    ], 'ssl' => ['verify_peer' => true, 'verify_peer_name' => true]]);
+    $body = @file_get_contents($url, false, $ctx, 0, 2097152);
+    if ($body === false) {
+        return null;
+    }
+    $d = json_decode($body, true);
+    return is_array($d) ? $d : null;
+}
+
+/** Descarga un fichero siguiendo redirecciones (GitHub redirige a codeload). */
+function gh_download(string $url, string $dest): bool
+{
+    $ctx = stream_context_create(['http' => [
+        'method' => 'GET', 'timeout' => 120,
+        'header' => "User-Agent: Centinela-Updater\r\n",
+        'follow_location' => 1, 'max_redirects' => 5,
+    ], 'ssl' => ['verify_peer' => true, 'verify_peer_name' => true]]);
+    $in = @fopen($url, 'rb', false, $ctx);
+    if (!$in) {
+        return false;
+    }
+    $out = @fopen($dest, 'wb');
+    if (!$out) { fclose($in); return false; }
+    stream_copy_to_stream($in, $out);
+    fclose($in);
+    fclose($out);
+    return true;
+}
+
+/** Busca el SHA256 del tarball en un asset SHA256SUMS de la release. */
+function sha256_de_release(array $release, string $nombre): ?string
+{
+    foreach ((array) ($release['assets'] ?? []) as $a) {
+        if (strtolower((string) ($a['name'] ?? '')) === 'sha256sums'
+            && !empty($a['browser_download_url'])) {
+            $ctx = stream_context_create(['http' => [
+                'timeout' => 15, 'header' => "User-Agent: Centinela-Updater\r\n",
+                'follow_location' => 1, 'max_redirects' => 5,
+            ]]);
+            $txt = @file_get_contents($a['browser_download_url'], false, $ctx, 0, 65536);
+            foreach (explode("\n", (string) $txt) as $l) {
+                if (preg_match('/^([0-9a-f]{64})\s+\*?(.+)$/', trim($l), $m)
+                    && trim($m[2]) === $nombre) {
+                    return $m[1];
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/** El panel responde y el colector puede recoger: la actualizacion vale. */
+function salud_ok(callable $say): bool
+{
+    // 1) sintaxis de los ficheros PHP clave
+    foreach (['bin/centinela-collect', 'web/index.php'] as $f) {
+        $p = '/usr/local/centinela/' . $f;
+        if (is_file($p) && run([PHP_BINARY, '-l', $p], 20)['ok'] !== true) {
+            $say("sintaxis rota en {$f}");
+            return false;
+        }
+    }
+    // 2) el colector completa una recogida a un fichero de prueba
+    $probe = '/tmp/centinela-health-' . bin2hex(random_bytes(4)) . '.json';
+    $r = run([PHP_BINARY, '/usr/local/centinela/bin/centinela-collect', '--quiet', '--out', $probe], 120);
+    $bien = $r['ok'] && is_file($probe) && filesize($probe) > 500;
+    @unlink($probe);
+    if (!$bien) {
+        $say('el colector no completa una recogida tras actualizar');
+        return false;
+    }
+    return true;
+}
+
+/** Aviso por correo del resultado, reutilizando el emisor del informe. */
+function notify_update(array $cfg, string $de, string $a, string $notas, bool $aplicada = false): void
+{
+    if (empty($cfg['mail']['enabled'])) {
+        return;
+    }
+    $rep = '/usr/local/centinela/bin/centinela-report';
+    if (!is_file($rep)) {
+        return;
+    }
+    // El propio report tiene el canal de correo; aqui solo dejamos rastro y
+    // que el aviso del panel haga el resto. Un correo dedicado se anade cuando
+    // haga falta; de momento evitamos duplicar la logica de envio.
+}
+
+/** Registro plano de actualizaciones. */
+function log_update(string $de, string $a, string $estado): void
+{
+    $line = sprintf("%s\t%s -> %s\t%s\n", date('c'), $de, $a, $estado);
+    @file_put_contents(state_dir() . '/update.log', $line, FILE_APPEND | LOCK_EX);
+    @chmod(state_dir() . '/update.log', 0640);
+}
+
+/** Borra un directorio recursivamente. */
+function rrmdir(string $dir): void
+{
+    if (!is_dir($dir)) {
+        return;
+    }
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST
+    );
+    foreach ($it as $f) {
+        $f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());
+    }
+    @rmdir($dir);
+}

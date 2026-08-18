@@ -1,0 +1,29 @@
+[Unit]
+Description=Centinela - recogida forzada pedida desde el panel
+Documentation=file://__PREFIX__/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+# El fichero de peticion es solo una senal: su contenido no decide nada, el
+# comando es siempre el mismo. Se borra antes de recoger, de modo que una
+# pulsacion durante la recogida vuelva a disparar el camino al terminar.
+ExecStartPre=/bin/rm -f __STATE__/queue/recheck.req
+ExecStart=__PHP__ __PREFIX__/bin/centinela-collect --quiet --fresh --state __STATE__ --group __GROUP__
+ExecStartPost=-__PHP__ __PREFIX__/bin/centinela-report --alerts
+Nice=5
+TimeoutStartSec=300
+
+# Mismo endurecimiento que el colector periodico.
+NoNewPrivileges=yes
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

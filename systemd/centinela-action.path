@@ -1,0 +1,13 @@
+[Unit]
+Description=Centinela - vigila las acciones pedidas desde el panel
+Documentation=file://__PREFIX__/README.md
+
+[Path]
+# La web deja aqui la peticion (bloquear o desbloquear una IP) y systemd
+# arranca el ejecutor como root. El fichero no decide que se ejecuta: solo
+# transporta la peticion, que se valida entera del otro lado.
+DirectoryNotEmpty=__STATE__/queue/actions
+Unit=centinela-action.service
+
+[Install]
+WantedBy=paths.target

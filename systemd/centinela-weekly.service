@@ -1,0 +1,13 @@
+[Unit]
+Description=Centinela - informe semanal al administrador
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Refresca el estado antes de componer el informe.
+ExecStartPre=-__PHP__ __PREFIX__/bin/centinela-collect --quiet --state __STATE__ --group __GROUP__
+ExecStart=__PHP__ __PREFIX__/bin/centinela-report --weekly
+TimeoutStartSec=600
+NoNewPrivileges=yes
+PrivateTmp=yes

@@ -1,0 +1,29 @@
+[Unit]
+Description=Centinela - recogida del estado de seguridad
+Documentation=file://__PREFIX__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=__PHP__ __PREFIX__/bin/centinela-collect --quiet --state __STATE__ --group __GROUP__
+# Tras recoger, evalua si hay incidencias nuevas que notificar.
+ExecStartPost=-__PHP__ __PREFIX__/bin/centinela-report --alerts
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=300
+
+# El colector necesita root para leer /etc/shadow, consultar fail2ban e
+# interrogar a Plesk, pero se le retira todo lo que no usa.
+NoNewPrivileges=yes
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,44 @@
+# Centinela - nada de esto debe llegar a un repositorio publico.
+
+# --- Secretos y estado en vivo -------------------------------------------
+# La configuracion real vive en /etc/centinela/, nunca en el arbol. Pero si
+# alguien la copia aqui para trastear, que git no la publique jamas.
+config.local.php
+ssh_guard.json
+*.key
+*.pem
+*.crt
+credenciales*
+*credentials*
+.docroot
+
+# Estado que genera el colector (nunca es codigo)
+state.json
+events.json
+web_events.json
+score_history.json
+guard_state.json
+actions.json
+actions.log
+access.log
+alert_state.json
+syslog_state.json
+*.rl
+
+# --- Copias de seguridad y temporales ------------------------------------
+*.tar.gz
+*.bak
+*.old
+*.orig
+*.tmp
+*~
+backup*
+*-backup-*
+
+# --- Entorno de desarrollo -----------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+node_modules/
+vendor/

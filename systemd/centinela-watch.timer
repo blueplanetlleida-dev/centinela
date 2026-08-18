@@ -1,0 +1,12 @@
+[Unit]
+Description=Centinela - vigilancia de incidentes cada minuto
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=__WATCH_INTERVAL__
+AccuracySec=10s
+# Sin Persistent: si el servidor estuvo apagado no tiene sentido recuperar
+# pasadas atrasadas de algo cuyo valor es llegar pronto.
+
+[Install]
+WantedBy=timers.target

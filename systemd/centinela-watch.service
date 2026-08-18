@@ -1,0 +1,24 @@
+[Unit]
+Description=Centinela - vigilante de incidentes
+Documentation=file://__PREFIX__/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=__PHP__ __PREFIX__/bin/centinela-watch --quiet --state __STATE__ --group __GROUP__
+Nice=5
+IOSchedulingClass=idle
+TimeoutStartSec=120
+
+NoNewPrivileges=yes
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

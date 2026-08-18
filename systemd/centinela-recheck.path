@@ -1,0 +1,12 @@
+[Unit]
+Description=Centinela - vigila las peticiones de recomprobacion del panel
+Documentation=file://__PREFIX__/README.md
+
+[Path]
+# La web no puede ejecutar nada privilegiado: deja un fichero en un directorio
+# que si puede escribir y systemd arranca la recogida por ella.
+PathExists=__STATE__/queue/recheck.req
+Unit=centinela-recheck.service
+
+[Install]
+WantedBy=paths.target

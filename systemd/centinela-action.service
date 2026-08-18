@@ -1,0 +1,24 @@
+[Unit]
+Description=Centinela - aplica las acciones pedidas desde el panel
+Documentation=file://__PREFIX__/README.md
+After=fail2ban.service
+
+[Service]
+Type=oneshot
+ExecStart=__PHP__ __PREFIX__/bin/centinela-action --quiet --state __STATE__ --group __GROUP__
+Nice=0
+TimeoutStartSec=120
+
+# Necesita root para hablar con el socket de fail2ban, pero nada mas.
+NoNewPrivileges=yes
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
