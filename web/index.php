@@ -329,14 +329,29 @@ if (is_array($upInfo) && !empty($upInfo['latest'])): ?>
 <h2 class="section-title">Ataques web
   <span class="muted" style="font-weight:400;">· <?= (int) ($web['window_days'] ?? 7) ?> dias</span></h2>
 
-<?php if (!empty($web['hits'])): ?>
+<?php
+  // Un acierto sigue abierto si hoy responde 2xx o el colector aun no lo ha recomprobado.
+  $hitAbierto     = fn(array $x): bool => (int) ($x['now'] ?? 0) === 0 || ((int) $x['now'] >= 200 && (int) $x['now'] < 300);
+  $hitsAbiertos   = array_values(array_filter($web['hits'] ?? [], $hitAbierto));
+  $hitsCorregidos = count($web['hits'] ?? []) - count($hitsAbiertos);
+?>
+<?php if ($hitsAbiertos): ?>
 <div class="alert err" style="margin-bottom:var(--gap);">
   <span aria-hidden="true">▲</span>
   <span><strong>Un escaneo ha encontrado algo.</strong>
-  <?= count($web['hits']) ?> peticion(es) a ficheros sensibles respondieron 200:
-  <?php $hs = array_slice($web['hits'], 0, 3);
+  <?= count($hitsAbiertos) ?> peticion(es) a ficheros sensibles respondieron 200:
+  <?php $hs = array_slice($hitsAbiertos, 0, 3);
   echo h(implode(' · ', array_map(fn($x) => $x['domain'] . $x['path'], $hs))); ?>.
   Retira esos ficheros del docroot y rota lo que contuvieran.</span>
+</div>
+<?php elseif ($hitsCorregidos > 0): ?>
+<div class="alert info" style="margin-bottom:var(--gap);">
+  <span aria-hidden="true">✓</span>
+  <span><strong>Corregido.</strong>
+  <?= $hitsCorregidos ?> peticion(es) a ficheros sensibles respondieron 200 en la ventana, pero esas rutas ya no se sirven:
+  <?php $hs = array_slice($web['hits'], 0, 3);
+  echo h(implode(' · ', array_map(fn($x) => $x['domain'] . $x['path'] . ' (hoy ' . (int) ($x['now'] ?? 0) . ')', $hs))); ?>.
+  Si contenian credenciales, rotalas.</span>
 </div>
 <?php endif; ?>
 
@@ -357,10 +372,10 @@ if (is_array($upInfo) && !empty($upInfo['latest'])): ?>
     <span class="s">las mas activas de la ventana</span>
   </div></div>
   <div class="card"><div class="metric">
-    <span class="v" style="color:<?= empty($web['hits']) ? 'var(--good)' : 'var(--critical)' ?>">
-      <?= nfmt(count($web['hits'] ?? [])) ?></span>
+    <span class="v" style="color:<?= $hitsAbiertos ? 'var(--critical)' : 'var(--good)' ?>">
+      <?= nfmt(count($hitsAbiertos)) ?></span>
     <span class="k">Aciertos</span>
-    <span class="s">rutas sensibles que respondieron 200</span>
+    <span class="s">rutas sensibles que responden 200<?= $hitsCorregidos > 0 ? ' · ' . nfmt($hitsCorregidos) . ' ya corregida(s)' : '' ?></span>
   </div></div>
 </div>
 

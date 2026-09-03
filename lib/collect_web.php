@@ -224,6 +224,112 @@ function web_lee_incremental(array &$store, string $file, callable $fn, int &$re
     fclose($fh);
 }
 
+/**
+ * IPs cuyas peticiones no cuentan como escaneo: las del propio servidor (los
+ * escaneos de Centinela y los scripts de la casa salen con ellas) y las de
+ * confianza del guard (allow_ips de ssh_guard.json). Un 200 sobre una ruta
+ * sensible SI se registra venga de donde venga: que lo encuentre uno mismo es
+ * la mejor noticia posible, pero sigue siendo algo que se sirvio.
+ */
+function web_ips_confianza(): array
+{
+    static $lista = null;
+    if ($lista !== null) {
+        return $lista;
+    }
+    $lista = ['127.0.0.0/8', '::1'];
+    $propias = trim((string) @shell_exec('hostname -I 2>/dev/null'));
+    foreach (preg_split('/\s+/', $propias) ?: [] as $ip) {
+        if (filter_var($ip, FILTER_VALIDATE_IP)) {
+            $lista[] = $ip;
+        }
+    }
+    if (function_exists('guard_policy')) {
+        foreach ((array) (guard_policy()['allow_ips'] ?? []) as $cidr) {
+            $lista[] = (string) $cidr;
+        }
+    }
+    return $lista;
+}
+
+function web_ip_confianza(string $ip): bool
+{
+    if (function_exists('guard_ip_in_list')) {
+        return guard_ip_in_list($ip, web_ips_confianza());
+    }
+    return in_array($ip, web_ips_confianza(), true);
+}
+
+const CENT_WEB_RECHECK_TTL = 1800;   // cada acierto se recomprueba como mucho cada media hora
+const CENT_WEB_RECHECK_MAX = 20;     // URLs por pasada
+
+/** Codigo HTTP que devuelve hoy una URL (0 si no se pudo comprobar). Sin seguir redirecciones. */
+function web_estado_en_vivo(string $url): int
+{
+    $ctx = stream_context_create([
+        'http' => ['method' => 'GET', 'timeout' => 5, 'ignore_errors' => true, 'follow_location' => 0,
+                   'user_agent' => 'Centinela-recheck/1.0', 'header' => "Range: bytes=0-0\r\n"],
+        'ssl'  => ['verify_peer' => true, 'verify_peer_name' => true],
+    ]);
+    $fh = @fopen($url, 'rb', false, $ctx);
+    if (!$fh) {
+        return 0;
+    }
+    $meta = stream_get_meta_data($fh);
+    fclose($fh);
+    $estado = 0;
+    foreach ((array) ($meta['wrapper_data'] ?? []) as $hdr) {
+        if (is_string($hdr) && preg_match('~^HTTP/\S+ (\d{3})~', $hdr, $m)) {
+            $estado = (int) $m[1];
+        }
+    }
+    return $estado;
+}
+
+/**
+ * Vuelve a pedir en vivo cada ruta sensible que respondio 200. Un acierto que
+ * hoy devuelve 403/404 esta corregido: se sigue mostrando mientras dure la
+ * ventana (hubo fuga y hay que rotar lo que contuviera) pero deja de ser
+ * critico. Un fallo de red se anota como 0, «sin comprobar», nunca como corregido.
+ */
+function web_recomprueba_hits(array &$store): void
+{
+    $ahora     = time();
+    $pendiente = [];
+    foreach ($store['hits'] as $h) {
+        $dom = (string) ($h['domain'] ?? '');
+        if ($dom === '' || $dom[0] === '_' || !preg_match('/^[A-Za-z0-9.-]+$/', $dom)) {
+            continue;
+        }
+        if ((int) ($h['checked'] ?? 0) > $ahora - CENT_WEB_RECHECK_TTL) {
+            continue;
+        }
+        $pendiente[$dom . (string) ($h['path'] ?? '')] = $dom;
+    }
+    $resultado = [];
+    foreach (array_slice($pendiente, 0, CENT_WEB_RECHECK_MAX, true) as $clave => $dom) {
+        $ruta = substr($clave, strlen($dom));
+        $resultado[$clave] = web_estado_en_vivo('https://' . $dom . $ruta);
+    }
+    if (!$resultado) {
+        return;
+    }
+    foreach ($store['hits'] as $i => $h) {
+        $clave = (string) ($h['domain'] ?? '') . (string) ($h['path'] ?? '');
+        if (array_key_exists($clave, $resultado)) {
+            $store['hits'][$i]['now']     = $resultado[$clave];
+            $store['hits'][$i]['checked'] = $ahora;
+        }
+    }
+}
+
+/** Un acierto sigue abierto si hoy responde 2xx o no se ha podido comprobar. */
+function web_hit_abierto(array $h): bool
+{
+    $now = (int) ($h['now'] ?? 0);
+    return $now === 0 || ($now >= 200 && $now < 300);
+}
+
 /** Procesa una linea de log de acceso en formato combinado. */
 function web_ingest_access(array &$store, string $dominio, string $line): void
 {
@@ -259,7 +365,11 @@ function web_ingest_access(array &$store, string $dominio, string $line): void
         $cat = 'escaneo';
     }
 
-    web_anota($store, $ts, $ip, $dominio, $ruta, $cat, false);
+    // El propio servidor y las IPs de confianza no son escaneres: no inflan las
+    // estadisticas. Sus aciertos (abajo) si se guardan.
+    if (!web_ip_confianza($ip)) {
+        web_anota($store, $ts, $ip, $dominio, $ruta, $cat, false);
+    }
 
     // Lo importante: una ruta que no deberia existir ha respondido que si.
     if (in_array($cat, ['secreto', 'copia', 'ejecucion'], true) && $estado >= 200 && $estado < 300) {
@@ -369,6 +479,7 @@ function collect_web(): array
     }
 
     prune_web_store($store);
+    web_recomprueba_hits($store);
     save_web_store($store);
 
     return build_web_report($store);
@@ -418,13 +529,15 @@ function build_web_report(array $store): array
         ];
     }
 
-    $hits = array_slice(array_reverse($store['hits']), 0, 25);
+    $hits       = array_slice(array_reverse($store['hits']), 0, 25);
+    $abiertos   = array_values(array_filter($hits, 'web_hit_abierto'));
+    $corregidos = array_values(array_filter($hits, fn($h) => !web_hit_abierto($h)));
 
     $findings = [];
 
-    // 1. Lo mas grave: algo que no deberia estar publicado ha respondido 200.
-    if ($hits) {
-        $muestra = array_slice($hits, 0, 4);
+    // 1. Lo mas grave: algo que no deberia estar publicado ha respondido 200 y sigue haciendolo.
+    if ($abiertos) {
+        $muestra = array_slice($abiertos, 0, 4);
         $detalle = implode('; ', array_map(
             fn($h) => $h['domain'] . $h['path'] . ' (' . $h['status'] . ' a ' . $h['ip'] . ')',
             $muestra
@@ -432,7 +545,7 @@ function build_web_report(array $store): array
         $findings[] = finding(
             'web.exposed',
             SEV_CRIT,
-            count($hits) . ' peticion(es) a ficheros sensibles que respondieron 200',
+            count($abiertos) . ' peticion(es) a ficheros sensibles que respondieron 200',
             $detalle . '. Un escaneo automatico ha encontrado algo servido que no deberia estarlo.',
             'Retirar el fichero del docroot y rotar cualquier credencial que contuviera',
             guide(
@@ -455,6 +568,35 @@ function build_web_report(array $store): array
                 'curl -s -o /dev/null -w "%{http_code}\\n" https://DOMINIO' . ((string) ($muestra[0]['path'] ?? '')),
                 'Si el fichero era un .env o un wp-config, considera comprometidas tambien la base de datos y '
                 . 'las cuentas de correo que aparecieran en el.'
+            )
+        );
+    }
+
+    // 1b. Aciertos ya corregidos: la ruta hoy no responde 200. Se avisa (hubo fuga,
+    //     conviene rotar lo que contuviera) pero no penaliza: lo que habia que hacer
+    //     ya esta hecho. Desaparece solo al salir de la ventana.
+    if ($corregidos && !$abiertos) {
+        $muestra = array_slice($corregidos, 0, 4);
+        $findings[] = finding(
+            'web.exposed_fixed',
+            SEV_INFO,
+            count($corregidos) . ' peticion(es) a ficheros sensibles respondieron 200; ya no se sirven',
+            implode('; ', array_map(
+                fn($h) => $h['domain'] . $h['path'] . ' (200 a ' . $h['ip'] . ', hoy ' . (int) $h['now'] . ')',
+                $muestra
+            )) . '. Comprobado en vivo: la ruta ya no responde 200.',
+            'Si el fichero contenia credenciales, rotarlas: cerrar la ruta no deshace lo que ya se sirvio',
+            guide(
+                'Que la ruta ya no se sirva evita fugas nuevas, pero no recupera lo que un escaneo pudo '
+                . 'llevarse mientras respondia 200. Si las IPs que lo pidieron son tuyas o del propio '
+                . 'servidor, no hubo fuga. El aviso se retira solo al salir de la ventana de '
+                . CENT_WEB_DAYS . ' dias.',
+                [
+                    ['do' => 'Mira quien lo pidio y cuando',
+                     'cmd' => 'grep -h ' . escapeshellarg((string) ($muestra[0]['path'] ?? '')) . ' /var/www/vhosts/*/logs/*/access_ssl_log* | tail -20'],
+                    ['do' => 'Si el contenido llevaba contrasenas, claves o tokens, cambialos.'],
+                ],
+                'curl -s -o /dev/null -w "%{http_code}\\n" https://' . (string) ($muestra[0]['domain'] ?? 'DOMINIO') . (string) ($muestra[0]['path'] ?? '')
             )
         );
     }
