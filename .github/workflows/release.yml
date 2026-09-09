@@ -25,17 +25,21 @@ jobs:
       - name: Empaquetar y firmar por checksum
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          PKG="centinela-${VER}.tar.gz"
-          # Empaqueta el arbol sin .git ni ficheros de desarrollo
-          tar czf "$PKG" --exclude='.git' --exclude='.github' \
+          NAME="centinela-${VER}.tar.gz"
+          # Se empaqueta fuera del arbol: si el tar.gz cayera dentro, tar se
+          # leeria a si mismo y fallaria con «file changed as we read it».
+          OUT="$RUNNER_TEMP/release"
+          mkdir -p "$OUT"
+          tar czf "$OUT/$NAME" --exclude='.git' --exclude='.github' \
               --transform "s,^\.,centinela-${VER}," .
-          sha256sum "$PKG" > SHA256SUMS
-          echo "PKG=$PKG" >> "$GITHUB_ENV"
+          (cd "$OUT" && sha256sum "$NAME" > SHA256SUMS)
+          echo "PKG=$OUT/$NAME" >> "$GITHUB_ENV"
+          echo "SUMS=$OUT/SHA256SUMS" >> "$GITHUB_ENV"
 
       - name: Crear la release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ env.PKG }}
-            SHA256SUMS
+            ${{ env.SUMS }}
           generate_release_notes: true

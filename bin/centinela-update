@@ -96,7 +96,21 @@ if (isset($opts['check']) || !$aplicar) {
 }
 
 // -------------------------------------------------- descargar y verificar
-$tar = (string) ($release['tarball_url'] ?? "https://api.github.com/repos/{$repo}/tarball/" . $release['tag_name']);
+// Se prefiere el paquete que publica el workflow (centinela-<version>.tar.gz),
+// que es el que cubre el SHA256SUMS; el tarball automatico de GitHub tiene otro
+// contenido y otro hash, asi que solo sirve de reserva y sin verificacion.
+$nombrePkg = "centinela-{$ultima}.tar.gz";
+$tar = '';
+foreach ((array) ($release['assets'] ?? []) as $a) {
+    if ((string) ($a['name'] ?? '') === $nombrePkg && !empty($a['browser_download_url'])) {
+        $tar = (string) $a['browser_download_url'];
+        break;
+    }
+}
+$conAsset = $tar !== '';
+if (!$conAsset) {
+    $tar = (string) ($release['tarball_url'] ?? "https://api.github.com/repos/{$repo}/tarball/" . $release['tag_name']);
+}
 $tmp = '/tmp/centinela-update-' . bin2hex(random_bytes(6));
 @mkdir($tmp, 0700, true);
 $tgz = $tmp . '/src.tar.gz';
@@ -110,7 +124,7 @@ if (!gh_download($tar, $tgz) || !is_file($tgz) || filesize($tgz) < 1000) {
 // Verificacion opcional por checksum: si la release publica un SHA256SUMS con
 // una linea «<sha256>  centinela-<version>.tar.gz», se comprueba. Sin el, se
 // confia en HTTPS + la identidad del repositorio (que es quien controla root).
-$sha = sha256_de_release($release, "centinela-{$ultima}.tar.gz");
+$sha = $conAsset ? sha256_de_release($release, $nombrePkg) : null;
 if ($sha !== null) {
     $real = hash_file('sha256', $tgz);
     if (!hash_equals($sha, $real)) {
