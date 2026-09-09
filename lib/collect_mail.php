@@ -54,16 +54,32 @@ function collect_mail(): array
         && (time() - (int) ($lastSend['at'] ?? 0)) < 7 * 86400;
 
     // ------------------------------------------------ PTR y coincidencia ---
+    // Consulta DNS "limpia": contra resolvers publicos (el stub local de systemd-resolved
+    // sintetiza un PTR a partir del hostname y engana), y descartando las lineas de
+    // comentario/error de dig (";; communications error ...") para no tomarlas por datos.
+    $digPublic = function (array $args): array {
+        foreach (['@1.1.1.1', '@8.8.8.8'] as $srv) {
+            $r = run(array_merge(['/usr/bin/dig', '+short', '+time=3', '+tries=1', $srv], $args), 10);
+            $lines = array_values(array_filter(array_map('trim', explode("\n", $r['out'])),
+                fn($l) => $l !== '' && $l[0] !== ';'));
+            if ($r['ok'] && !preg_match('/communications error|connection timed out/i', $r['out'])) {
+                return $lines;
+            }
+        }
+        return [];
+    };
+
     if ($ip !== null && have('dig')) {
-        $ptr = trim(run(['/usr/bin/dig', '+short', '+time=3', '+tries=2', '-x', $ip], 10)['out']);
-        $ptr = trim(explode("\n", $ptr)[0]);
-        $ptr = rtrim($ptr, '.');
+        $ptr = rtrim((string) ($digPublic(['-x', $ip])[0] ?? ''), '.');
         $res['ptr'] = $ptr !== '' ? $ptr : null;
 
         if ($res['ptr'] === null) {
-            $findings[] = finding('mail.ptr', SEV_CRIT,
+            $findings[] = finding('mail.ptr',
+                $sendingOk ? SEV_WARN : SEV_CRIT,
                 'La IP de salida no tiene DNS inverso',
-                "{$ip} sin registro PTR. Gmail y otros proveedores rechazan el correo por politica.",
+                "{$ip} sin registro PTR." . ($sendingOk
+                    ? ' El correo se esta entregando gracias a SPF y DKIM, pero Gmail y otros proveedores rechazan por este motivo.'
+                    : ' Gmail y otros proveedores rechazan el correo por politica.'),
                 'Solicitar al proveedor de la IP que configure el PTR',
                 guide(
                     'El PTR es lo primero que mira el servidor que recibe tu correo. Una IP sin nombre inverso se '
@@ -82,9 +98,8 @@ function collect_mail(): array
                 ));
         } else {
             // Comprobacion directa-inversa: el nombre debe resolver a la misma IP
-            $fwd = array_filter(array_map('trim', explode("\n",
-                run(['/usr/bin/dig', '+short', '+time=3', '+tries=2', $res['ptr'], 'A'], 10)['out'])));
-            $fwd = array_values(array_filter($fwd, fn($x) => filter_var($x, FILTER_VALIDATE_IP)));
+            $fwd = array_values(array_filter($digPublic([$res['ptr'], 'A']),
+                fn($x) => filter_var($x, FILTER_VALIDATE_IP)));
             $res['ptr_forward'] = $fwd;
             $res['fcrdns'] = in_array($ip, $fwd, true);
 
