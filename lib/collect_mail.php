@@ -138,14 +138,7 @@ function collect_mail(): array
 
     // --------------------------------------------------- SPF, DKIM, DMARC ---
     // Revisamos los dominios de correo alojados mas relevantes
-    $bin = plesk_bin();
-    $domains = [];
-    if ($bin !== null) {
-        $out = run([$bin, 'db', '-Ne',
-            "SELECT d.name FROM domains d JOIN mail m ON m.dom_id = d.id
-             WHERE d.parentDomainId = 0 GROUP BY d.name LIMIT 10"], 20)['out'];
-        $domains = array_values(array_filter(array_map('trim', explode("\n", $out))));
-    }
+    $domains = platform_mail_domains(10);
 
     $noSpf = $noDmarc = [];
     foreach ($domains as $d) {
@@ -156,8 +149,15 @@ function collect_mail(): array
         $spf   = (bool) preg_match('/v=spf1/i', $txt);
         $dtxt  = run(['/usr/bin/dig', '+short', '+time=3', '_dmarc.' . $d, 'TXT'], 10)['out'];
         $dmarc = (bool) preg_match('/v=DMARC1/i', $dtxt);
-        $ktxt  = run(['/usr/bin/dig', '+short', '+time=3', 'default._domainkey.' . $d, 'TXT'], 10)['out'];
-        $dkim  = (bool) preg_match('/v=DKIM1|p=/i', $ktxt);
+        // El selector DKIM depende de quien firme: Plesk usa «default», Hestia «mail»
+        $dkim = false;
+        foreach (platform_dkim_selectors() as $sel) {
+            $ktxt = run(['/usr/bin/dig', '+short', '+time=3', $sel . '._domainkey.' . $d, 'TXT'], 10)['out'];
+            if (preg_match('/v=DKIM1|p=/i', $ktxt)) {
+                $dkim = true;
+                break;
+            }
+        }
 
         $res['domains'][] = ['domain' => $d, 'spf' => $spf, 'dmarc' => $dmarc, 'dkim' => $dkim];
         if (!$spf)   { $noSpf[] = $d; }
@@ -176,8 +176,12 @@ function collect_mail(): array
                     ['do' => 'Comprueba que publica hoy el dominio',
                      'cmd' => 'dig +short TXT DOMINIO | grep -i spf1'],
                     ['do' => 'Publica un TXT en la raiz del dominio autorizando a este servidor. Si el DNS lo lleva '
-                           . 'Plesk, con esto basta; si esta en Cloudflare u otro proveedor, hazlo alli',
-                     'cmd' => 'plesk bin dns --add DOMINIO -txt "v=spf1 a mx ip4:' . (string) ($res['ip'] ?? '') . ' ~all" -domain DOMINIO'],
+                           . 'este panel, con esto basta; si esta en Cloudflare u otro proveedor, hazlo alli',
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin dns --add DOMINIO -txt "v=spf1 a mx ip4:' . (string) ($res['ip'] ?? '') . ' ~all" -domain DOMINIO',
+                         'hestia'  => 'v-add-dns-record USUARIO DOMINIO @ TXT \'"v=spf1 a mx ip4:' . (string) ($res['ip'] ?? '') . ' ~all"\'',
+                         'generic' => 'echo \'DOMINIO. IN TXT "v=spf1 a mx ip4:' . (string) ($res['ip'] ?? '') . ' ~all"\'   # anadelo en tu DNS',
+                     ])],
                     ['do' => 'Incluye los servicios externos que tambien envien por ti (facturacion, boletines) '
                            . 'con su include, en vez de anadir mas IP sueltas.'],
                     ['do' => 'Espera a que propague y comprueba el resultado',
@@ -200,7 +204,11 @@ function collect_mail(): array
                 [
                     ['do' => 'Asegurate primero de tener SPF y DKIM funcionando: DMARC sin ellos rechaza tu propio correo.'],
                     ['do' => 'Publica la politica en modo observacion, que no bloquea nada',
-                     'cmd' => 'plesk bin dns --add DOMINIO -txt "v=DMARC1; p=none; rua=mailto:dmarc@DOMINIO" -domain _dmarc.DOMINIO'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin dns --add DOMINIO -txt "v=DMARC1; p=none; rua=mailto:dmarc@DOMINIO" -domain _dmarc.DOMINIO',
+                         'hestia'  => 'v-add-dns-record USUARIO DOMINIO _dmarc TXT \'"v=DMARC1; p=none; rua=mailto:dmarc@DOMINIO"\'',
+                         'generic' => 'echo \'_dmarc.DOMINIO. IN TXT "v=DMARC1; p=none; rua=mailto:dmarc@DOMINIO"\'   # anadelo en tu DNS',
+                     ])],
                     ['do' => 'Revisa durante unas semanas los informes que lleguen a esa direccion.'],
                     ['do' => 'Cuando veas que todo tu correo legitimo pasa, endurece a p=quarantine y luego a p=reject.'],
                 ],
@@ -229,7 +237,11 @@ function collect_mail(): array
                         ['do' => 'Lee el motivo del ultimo fallo de un mensaje concreto',
                          'cmd' => 'grep -m5 "status=deferred" /var/log/maillog /var/log/mail.log 2>/dev/null | tail -5'],
                         ['do' => 'Si es spam, cambia la contrasena de la cuenta y borra sus mensajes de la cola',
-                         'cmd' => 'plesk bin mail --update CUENTA@DOMINIO -passwd NUEVA; postsuper -d ALL deferred'],
+                         'cmd' => platform_text([
+                             'plesk'   => 'plesk bin mail --update CUENTA@DOMINIO -passwd NUEVA; postsuper -d ALL deferred',
+                             'hestia'  => 'v-change-mail-account-password USUARIO DOMINIO CUENTA NUEVA; postsuper -d ALL deferred',
+                             'generic' => 'doveadm pw -s SHA512-CRYPT   # y actualiza el buzon; despues: postsuper -d ALL deferred',
+                         ])],
                         ['do' => 'Si es un destino temporalmente caido, reintenta la cola',
                          'cmd' => 'postqueue -f'],
                     ],

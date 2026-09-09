@@ -16,6 +16,7 @@ declare(strict_types=1);
 $base = dirname(__DIR__);
 require $base . '/lib/util.php';
 require $base . '/lib/config.php';
+require $base . '/lib/platform.php';
 require $base . '/lib/totp.php';
 require $base . '/lib/guard.php';
 require $base . '/lib/sysout.php';
@@ -544,6 +545,7 @@ case 'check':
     };
     cwrite('Diagnostico de Centinela');
     cwrite(str_repeat('-', 55));
+    cwrite('  Plataforma: ' . platform_label() . (empty($cfg['platform']) ? ' (detectada; fija \'platform\' en config.php)' : ''));
     $line(is_readable($cfgFile), "Configuracion legible: {$cfgFile}");
     $line((bool) $cfg['auth']['hash'], 'Contrasena configurada');
     $line(!$cfg['auth']['totp_required'] || (bool) $cfg['auth']['totp_secret'], 'Segundo factor configurado');

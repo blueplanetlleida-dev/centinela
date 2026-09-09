@@ -18,6 +18,7 @@ declare(strict_types=1);
 $base = dirname(__DIR__);
 require $base . '/lib/util.php';
 require $base . '/lib/config.php';
+require $base . '/lib/platform.php';
 
 $opts = getopt('', ['state:', 'group:', 'quiet', 'help']);
 if (isset($opts['help'])) {
@@ -165,7 +166,7 @@ if (!$files) {
 
 $protected = protected_ips($cfg);
 $jails     = live_jails();
-$defJail   = (string) ($cfg['actions']['jail'] ?? 'plesk-permanent-ban');
+$defJail   = ban_jail();
 $hechas    = 0;
 
 foreach ($files as $file) {

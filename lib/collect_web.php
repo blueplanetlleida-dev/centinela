@@ -129,21 +129,8 @@ function save_web_store(array $store): void
  */
 function web_log_files(): array
 {
-    $out = [];
-    foreach (glob('/var/www/vhosts/*/logs/*', GLOB_ONLYDIR) ?: [] as $dir) {
-        $dominio = basename($dir);
-        foreach (['access_ssl_log', 'access_ssl_log.processed', 'access_log', 'access_log.processed'] as $n) {
-            if (is_readable($dir . '/' . $n)) {
-                $out[] = ['domain' => $dominio, 'file' => $dir . '/' . $n, 'kind' => 'access'];
-            }
-        }
-        foreach (['error_log', 'error_log.processed'] as $n) {
-            if (is_readable($dir . '/' . $n)) {
-                $out[] = ['domain' => $dominio, 'file' => $dir . '/' . $n, 'kind' => 'error'];
-            }
-        }
-    }
-    return $out;
+    // Donde esten depende del panel: lo resuelve la capa de plataforma.
+    return platform_web_logs();
 }
 
 /** Reserva y devuelve el contador del dia. */
@@ -554,16 +541,27 @@ function build_web_report(array $store): array
                 . 'hubiera dentro hay que darlas por publicas.',
                 [
                     ['do' => 'Mira que se sirvio exactamente y desde cuando',
-                     'cmd' => 'grep -h ' . escapeshellarg((string) ($muestra[0]['path'] ?? '')) . ' /var/www/vhosts/*/logs/*/access_ssl_log* | tail -20'],
+                     'cmd' => 'grep -h ' . escapeshellarg((string) ($muestra[0]['path'] ?? '')) . ' ' . platform_weblog_glob() . ' | tail -20'],
                     ['do' => 'Saca el fichero del docroot; no basta con renombrarlo',
-                     'cmd' => 'ls -la /var/www/vhosts/' . escapeshellarg((string) ($muestra[0]['domain'] ?? 'DOMINIO')) . '/httpdocs/' . ltrim((string) ($muestra[0]['path'] ?? ''), '/')],
+                     'cmd' => str_replace(['DOMINIO', 'RUTA'],
+                         [escapeshellarg((string) ($muestra[0]['domain'] ?? 'DOMINIO')), ltrim((string) ($muestra[0]['path'] ?? ''), '/')],
+                         platform_text([
+                             'plesk'   => 'ls -la /var/www/vhosts/DOMINIO/httpdocs/RUTA',
+                             'hestia'  => 'ls -la /home/*/web/DOMINIO/public_html/RUTA',
+                             'generic' => 'ls -la /var/www/DOMINIO/RUTA',
+                         ]))],
                     ['do' => 'Rota todo lo que hubiera dentro: contrasenas de base de datos, claves de API, '
                            . 'tokens. Cambiarlas es lo unico que revierte la fuga.'],
                     ['do' => 'Bloquea en el servidor web el acceso a ficheros ocultos y copias, para que el '
                            . 'proximo despiste no se sirva',
-                     'cmd' => 'printf \'<FilesMatch "^\\\\.|\\\\.(bak|old|save|sql|swp)$">\\n  Require all denied\\n</FilesMatch>\\n\' >> /var/www/vhosts/DOMINIO/conf/vhost.conf && plesk sbin httpdmng --reconfigure-domain DOMINIO'],
+                     'cmd' => 'printf \'<FilesMatch "^\\\\.|\\\\.(bak|old|save|sql|swp)$">\\n  Require all denied\\n</FilesMatch>\\n\' >> '
+                            . platform_text([
+                                'plesk'   => '/var/www/vhosts/DOMINIO/conf/vhost.conf && plesk sbin httpdmng --reconfigure-domain DOMINIO',
+                                'hestia'  => '/home/USUARIO/conf/web/DOMINIO/apache2.conf_centinela && apache2ctl -t && systemctl reload apache2',
+                                'generic' => '/etc/apache2/sites-available/DOMINIO.conf && apache2ctl -t && systemctl reload apache2   # en nginx: location ~ /\\.|\\.(bak|old|save|sql|swp)$ { deny all; }',
+                            ])],
                     ['do' => 'Revisa si esa IP hizo algo mas despues de encontrarlo',
-                     'cmd' => 'grep -h ' . escapeshellarg((string) ($muestra[0]['ip'] ?? '')) . ' /var/www/vhosts/*/logs/*/access_ssl_log* | tail -40'],
+                     'cmd' => 'grep -h ' . escapeshellarg((string) ($muestra[0]['ip'] ?? '')) . ' ' . platform_weblog_glob() . ' | tail -40'],
                 ],
                 'curl -s -o /dev/null -w "%{http_code}\\n" https://DOMINIO' . ((string) ($muestra[0]['path'] ?? '')),
                 'Si el fichero era un .env o un wp-config, considera comprometidas tambien la base de datos y '
@@ -593,7 +591,7 @@ function build_web_report(array $store): array
                 . CENT_WEB_DAYS . ' dias.',
                 [
                     ['do' => 'Mira quien lo pidio y cuando',
-                     'cmd' => 'grep -h ' . escapeshellarg((string) ($muestra[0]['path'] ?? '')) . ' /var/www/vhosts/*/logs/*/access_ssl_log* | tail -20'],
+                     'cmd' => 'grep -h ' . escapeshellarg((string) ($muestra[0]['path'] ?? '')) . ' ' . platform_weblog_glob() . ' | tail -20'],
                     ['do' => 'Si el contenido llevaba contrasenas, claves o tokens, cambialos.'],
                 ],
                 'curl -s -o /dev/null -w "%{http_code}\\n" https://' . (string) ($muestra[0]['domain'] ?? 'DOMINIO') . (string) ($muestra[0]['path'] ?? '')
@@ -620,15 +618,15 @@ function build_web_report(array $store): array
                 . 'sitios. Lo que hay que garantizar es que no haya nada que encontrar.',
                 [
                     ['do' => 'Mira que estan buscando, que dice mucho de contra que van',
-                     'cmd' => 'grep -h ' . escapeshellarg((string) ($lista[0]['ip'] ?? '')) . ' /var/www/vhosts/*/logs/*/access_ssl_log* | awk \'{print $7}\' | sort | uniq -c | sort -rn | head -20'],
+                     'cmd' => 'grep -h ' . escapeshellarg((string) ($lista[0]['ip'] ?? '')) . ' ' . platform_weblog_glob() . ' | awk \'{print $7}\' | sort | uniq -c | sort -rn | head -20'],
                     ['do' => 'Comprueba que ninguna de esas rutas responde 200 (la tabla de arriba lo dice, pero '
                            . 'conviene verlo en vivo)',
                      'cmd' => 'curl -s -o /dev/null -w "%{http_code}\\n" https://DOMINIO/.env'],
                     ['do' => 'Bloquealas desde la tabla de ataques web con el boton Bloquear, o a mano',
-                     'cmd' => 'fail2ban-client set plesk-permanent-ban banip ' . ((string) ($lista[0]['ip'] ?? 'IP'))],
+                     'cmd' => 'fail2ban-client set ' . ban_jail() . ' banip ' . ((string) ($lista[0]['ip'] ?? 'IP'))],
                     ['do' => 'Si ModSecurity esta en modo deteccion, pasalo a bloqueo: casi todo esto lo para solo.'],
                 ],
-                'grep -c ' . escapeshellarg((string) ($lista[0]['ip'] ?? '')) . ' /var/www/vhosts/*/logs/*/access_ssl_log'
+                'grep -c ' . escapeshellarg((string) ($lista[0]['ip'] ?? '')) . ' ' . platform_weblog_glob()
             )
         );
     }
@@ -656,20 +654,38 @@ function build_web_report(array $store): array
                     array_slice(array_keys($peores), 0, 3),
                     array_slice(array_values($peores), 0, 3)
                 )),
-            'Activar el jail plesk-wordpress y limitar el acceso a wp-login.php',
+            platform_text([
+                'plesk'   => 'Activar el jail plesk-wordpress y limitar el acceso a wp-login.php',
+                'generic' => 'Limitar los intentos contra wp-login.php con un jail de fail2ban o un plugin',
+            ]),
             guide(
                 'wp-login.php y xmlrpc.php son el objetivo mas atacado de internet. Basta una contrasena floja '
                 . 'en un solo usuario para que el sitio caiga, y desde ahi se llega al resto de la suscripcion.',
                 [
                     ['do' => 'Comprueba que el jail de WordPress esta activo y cogiendolos',
-                     'cmd' => 'fail2ban-client status plesk-wordpress'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'fail2ban-client status plesk-wordpress',
+                         'generic' => 'fail2ban-client status | grep -i wordpress || echo "no hay jail de WordPress"',
+                     ])],
                     ['do' => 'Si xmlrpc.php no lo usa nadie (ni Jetpack ni la app movil), cierralo del todo',
-                     'cmd' => 'printf \'<Files "xmlrpc.php">\\n  Require all denied\\n</Files>\\n\' >> /var/www/vhosts/DOMINIO/conf/vhost.conf && plesk sbin httpdmng --reconfigure-domain DOMINIO'],
-                    ['do' => 'Instala el WordPress Toolkit de Plesk y activa sus medidas de seguridad, que incluyen '
-                           . 'limitar los intentos de acceso.'],
+                     'cmd' => 'printf \'<Files "xmlrpc.php">\\n  Require all denied\\n</Files>\\n\' >> '
+                            . platform_text([
+                                'plesk'   => '/var/www/vhosts/DOMINIO/conf/vhost.conf && plesk sbin httpdmng --reconfigure-domain DOMINIO',
+                                'hestia'  => '/home/USUARIO/conf/web/DOMINIO/apache2.conf_centinela && apache2ctl -t && systemctl reload apache2',
+                                'generic' => '/etc/apache2/sites-available/DOMINIO.conf && apache2ctl -t && systemctl reload apache2',
+                            ])],
+                    ['do' => platform_text([
+                        'plesk'   => 'Instala el WordPress Toolkit de Plesk y activa sus medidas de seguridad, que incluyen '
+                                   . 'limitar los intentos de acceso.',
+                        'generic' => 'Instala en cada WordPress un plugin que limite los intentos de acceso (Limit Login '
+                                   . 'Attempts Reloaded o Wordfence) o crea un jail de fail2ban sobre los POST a wp-login.php.',
+                    ])],
                     ['do' => 'Revisa que ningun usuario del sitio use una contrasena debil, empezando por admin.'],
                 ],
-                'fail2ban-client status plesk-wordpress'
+                platform_text([
+                    'plesk'   => 'fail2ban-client status plesk-wordpress',
+                    'generic' => 'fail2ban-client status | grep -i wordpress',
+                ])
             )
         );
     }

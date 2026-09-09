@@ -195,7 +195,7 @@ function collect_system(): array
                     ['do' => 'Comprueba si viene de la cola de correo, causa muy habitual',
                      'cmd' => 'mailq | tail -1'],
                     ['do' => 'Descarta un pico de peticiones web contra un dominio concreto',
-                     'cmd' => 'tail -5000 /var/www/vhosts/*/logs/*/access_ssl_log 2>/dev/null | awk \'{print $1}\' | sort | uniq -c | sort -rn | head'],
+                     'cmd' => 'tail -q -n 5000 ' . platform_weblog_glob() . ' 2>/dev/null | awk \'{print $1}\' | sort | uniq -c | sort -rn | head'],
                 ],
                 'uptime'
             ));

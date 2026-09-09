@@ -40,6 +40,19 @@ function load_config(): array
         'state_dir'  => '/var/lib/centinela',
         'timezone'   => 'Europe/Madrid',
         'locale'     => 'es',
+        // 'plesk' | 'hestia' | 'generic'. Vacio = detectar.
+        'platform'   => '',
+
+        // Acciones sobre IPs desde el panel y la geo-valla.
+        'actions' => [
+            'jail'      => '',   // vacio = el de la plataforma (plesk-permanent-ban o centinela)
+            'never_ban' => [],
+        ],
+
+        // Sin panel: patrones de los logs web si no estan en los sitios habituales.
+        'web'   => ['logs'  => []],
+        // Sin panel: rutas de certificados a vigilar si no estan en los sitios habituales.
+        'certs' => ['paths' => []],
 
         'auth' => [
             'user'          => 'admin',

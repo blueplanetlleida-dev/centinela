@@ -46,7 +46,7 @@ function guard_policy(?array $set = null): array
         'services'        => ['ssh', 'panel'],
         'allow_countries' => [],
         'allow_ips'       => [],
-        'jail'            => 'plesk-permanent-ban',
+        'jail'            => platform_default_jail(),
     ];
     $raw = @file_get_contents(guard_policy_file());
     $d   = $raw !== false ? json_decode($raw, true) : null;

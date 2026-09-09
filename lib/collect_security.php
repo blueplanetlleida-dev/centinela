@@ -43,16 +43,30 @@ function collect_fail2ban(): array
             'jails'     => [],
             'findings'  => [finding('f2b.missing', SEV_CRIT, 'fail2ban no instalado',
                 'Sin bloqueo automatico de fuerza bruta',
-                'Activar en Plesk: Herramientas y configuracion > Proteccion contra ataques de fuerza bruta',
+                platform_text([
+                    'plesk'   => 'Activar en Plesk: Herramientas y configuracion > Proteccion contra ataques de fuerza bruta',
+                    'generic' => 'Instalar fail2ban y activar al menos el jail sshd',
+                ]),
                 guide(
                     'Sin fail2ban, una botnet puede probar contrasenas contra SSH, el correo o el panel '
                     . 'durante dias sin que nada la corte. Es la defensa que convierte miles de intentos en unos pocos.',
                     [
-                        ['do' => 'En Plesk se instala como componente: entra en Herramientas y configuracion > '
-                               . 'Actualizaciones y anade Fail2Ban, o hazlo desde la linea de comandos',
-                         'cmd' => 'plesk installer --select-release-current --install-component fail2ban'],
-                        ['do' => 'Activa la proteccion y los jails que te interesen en Herramientas y '
-                               . 'configuracion > Proteccion contra ataques de fuerza bruta.'],
+                        ['do' => platform_text([
+                            'plesk'   => 'En Plesk se instala como componente: entra en Herramientas y configuracion > '
+                                       . 'Actualizaciones y anade Fail2Ban, o hazlo desde la linea de comandos',
+                            'generic' => 'Instala el paquete',
+                         ]),
+                         'cmd' => platform_text([
+                             'plesk'   => 'plesk installer --select-release-current --install-component fail2ban',
+                             'generic' => 'apt-get install fail2ban || dnf install fail2ban',
+                         ])],
+                        ['do' => platform_text([
+                            'plesk'   => 'Activa la proteccion y los jails que te interesen en Herramientas y '
+                                       . 'configuracion > Proteccion contra ataques de fuerza bruta.',
+                            'hestia'  => 'Hestia trae sus jails (ssh, hestia, dovecot, exim, vsftpd): activalos desde '
+                                       . 'Servidor > Configuracion > Seguridad o revisa /etc/fail2ban/jail.local.',
+                            'generic' => 'Crea /etc/fail2ban/jail.local con [sshd] enabled = true y los servicios que expongas.',
+                         ])],
                         ['do' => 'Comprueba que ha arrancado y esta filtrando',
                          'cmd' => 'fail2ban-client status'],
                     ],
@@ -133,8 +147,13 @@ function collect_fail2ban(): array
                 [
                     ['do' => 'Confirma que efectivamente no hay ninguno cargado',
                      'cmd' => 'fail2ban-client status'],
-                    ['do' => 'En Plesk, activa los jails desde Herramientas y configuracion > Proteccion contra '
-                           . 'ataques de fuerza bruta: como minimo ssh, plesk-panel, dovecot y postfix.'],
+                    ['do' => platform_text([
+                        'plesk'   => 'En Plesk, activa los jails desde Herramientas y configuracion > Proteccion contra '
+                                   . 'ataques de fuerza bruta: como minimo ssh, plesk-panel, dovecot y postfix.',
+                        'hestia'  => 'Activa los jails de Hestia (ssh-iptables, hestia-iptables, dovecot, exim) en '
+                                   . '/etc/fail2ban/jail.local.',
+                        'generic' => 'Activa como minimo [sshd] en /etc/fail2ban/jail.local, y los del correo si lo sirves.',
+                    ])],
                     ['do' => 'Si lo llevas a mano, habilita el jail en jail.local y recarga',
                      'cmd' => 'fail2ban-client reload'],
                     ['do' => 'Verifica que uno concreto esta leyendo su registro',
@@ -193,22 +212,44 @@ function collect_firewall(): array
     if (!$res['active']) {
         $findings[] = finding('fw.none', SEV_CRIT, 'Sin cortafuegos de paquetes activo',
             'Todos los puertos en escucha quedan alcanzables',
-            'Activar la extension Firewall de Plesk',
+            platform_text([
+                'plesk'   => 'Activar la extension Firewall de Plesk',
+                'hestia'  => 'Activar el cortafuegos de Hestia: v-update-firewall',
+                'generic' => 'Activar un cortafuegos (ufw o nftables) con politica de denegacion por defecto',
+            ]),
             guide(
                 'Sin cortafuegos, cualquier servicio que arranque queda publicado en internet sin que nadie lo '
                 . 'decida: basta un demonio de pruebas o una base de datos mal atada para abrir la puerta.',
                 [
                     ['do' => 'Mira que estas exponiendo ahora mismo',
                      'cmd' => 'ss -lntup'],
-                    ['do' => 'Instala la extension Firewall de Plesk, que gestiona las reglas sin pelearse con Plesk',
-                     'cmd' => 'plesk bin extension --install firewall'],
-                    ['do' => 'Configurala en Herramientas y configuracion > Cortafuegos: deja pasar lo necesario '
-                           . '(22, 80, 443, correo y los puertos del panel) y bloquea el resto por defecto.'],
-                    ['do' => 'Aplica las reglas y confirmalas dentro del plazo que da Plesk antes de revertir.'],
+                    ['do' => platform_text([
+                        'plesk'   => 'Instala la extension Firewall de Plesk, que gestiona las reglas sin pelearse con Plesk',
+                        'hestia'  => 'Activa el cortafuegos que gestiona Hestia',
+                        'generic' => 'Activa ufw permitiendo antes SSH, web y correo',
+                     ]),
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin extension --install firewall',
+                         'hestia'  => 'v-change-sys-config-value FIREWALL_SYSTEM iptables && v-update-firewall',
+                         'generic' => 'ufw allow 22/tcp && ufw allow 80,443/tcp && ufw allow 25,465,587,993,995/tcp && ufw --force enable',
+                     ])],
+                    ['do' => platform_text([
+                        'plesk'   => 'Configurala en Herramientas y configuracion > Cortafuegos: deja pasar lo necesario '
+                                   . '(22, 80, 443, correo y los puertos del panel) y bloquea el resto por defecto.',
+                        'hestia'  => 'Revisa las reglas en Servidor > Cortafuegos: deja pasar lo necesario y bloquea el resto.',
+                        'generic' => 'Deja pasar solo lo que sirves y bloquea el resto por defecto (ufw default deny incoming).',
+                     ])],
+                    ['do' => platform_text([
+                        'plesk'   => 'Aplica las reglas y confirmalas dentro del plazo que da Plesk antes de revertir.',
+                        'generic' => 'Abre una segunda sesion SSH antes de aplicar y comprueba que sigue entrando.',
+                     ])],
                 ],
                 'nft list ruleset | head -20; iptables -S | head -20',
-                'Aplicar reglas nuevas puede cortarte la sesion SSH. Plesk revierte solo si no confirmas: usa esa '
-                . 'red de seguridad y no confirmes hasta comprobar que sigues dentro.'
+                platform_text([
+                    'plesk'   => 'Aplicar reglas nuevas puede cortarte la sesion SSH. Plesk revierte solo si no confirmas: usa esa '
+                               . 'red de seguridad y no confirmes hasta comprobar que sigues dentro.',
+                    'generic' => 'Aplicar reglas nuevas puede cortarte la sesion SSH: permite el puerto 22 antes de activar nada.',
+                ])
             ));
     } elseif ($policy === 'ACCEPT') {
         $findings[] = finding('fw.policy', SEV_WARN, 'Politica por defecto de INPUT en ACCEPT',
@@ -223,8 +264,18 @@ function collect_firewall(): array
                      'cmd' => 'ss -lntu | awk "NR>1 {print \$5}" | sort -u'],
                     ['do' => 'Revisa las reglas actuales',
                      'cmd' => 'iptables -S INPUT | head -40'],
-                    ['do' => 'Cambia el modo en Herramientas y configuracion > Cortafuegos de Plesk: la extension '
-                           . 'genera la politica restrictiva y mantiene abiertos los puertos que Plesk necesita.'],
+                    ['do' => platform_text([
+                        'plesk'   => 'Cambia el modo en Herramientas y configuracion > Cortafuegos de Plesk: la extension '
+                                   . 'genera la politica restrictiva y mantiene abiertos los puertos que Plesk necesita.',
+                        'hestia'  => 'Anade al final de las reglas de Hestia una de DROP para todo lo demas '
+                                   . '(Servidor > Cortafuegos > Anadir regla).',
+                        'generic' => 'Pon la politica por defecto en DROP y permite solo lo que sirves',
+                     ]),
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin extension --exec firewall cli.php --status 2>/dev/null || iptables -S INPUT | head -3',
+                         'hestia'  => 'v-list-firewall',
+                         'generic' => 'ufw default deny incoming && ufw status verbose   # o: iptables -P INPUT DROP',
+                     ])],
                     ['do' => 'Confirma las reglas solo despues de abrir una segunda sesion SSH y comprobar que entra.'],
                 ],
                 'iptables -S INPUT | head -3',

@@ -21,6 +21,7 @@ declare(strict_types=1);
 $base = dirname(__DIR__);
 require $base . '/lib/util.php';
 require $base . '/lib/config.php';
+require $base . '/lib/platform.php';
 
 $opts = getopt('', ['check', 'force', 'quiet', 'help']);
 if (isset($opts['help'])) {
@@ -174,8 +175,9 @@ if (!$ok) {
         run(['/bin/tar', 'xzf', $backWeb, '-C', dirname($docroot)], 120);
     }
     // Recargar PHP para descartar el opcache de la version rota
-    foreach (glob('/opt/plesk/php/*/sbin/php-fpm') ?: [] as $_) { /* no-op */ }
-    run(['/usr/bin/systemctl', 'reload-or-restart', 'plesk-php84-fpm'], 30);
+    foreach (platform_fpm_units() as $u) {
+        run(['/usr/bin/systemctl', 'reload-or-restart', $u], 30);
+    }
     $say('revertido a ' . $instalada);
     log_update($instalada, $ultima, 'rollback');
     rrmdir($tmp);

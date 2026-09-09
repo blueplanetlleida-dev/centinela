@@ -1,10 +1,12 @@
 # Centinela
 
-Panel de seguridad en tiempo real para servidores **Plesk**: estado de salud,
+Panel de seguridad en tiempo real para servidores Linux: estado de salud,
 análisis de ataques, looking glass, alertas por correo e informe semanal
 automático al administrador.
 
-Funciona en Plesk Obsidian sobre Ubuntu/Debian y AlmaLinux/RHEL.
+Funciona en servidores con **Plesk Obsidian**, con **HestiaCP** y **sin
+panel** (Ubuntu/Debian o AlmaLinux/RHEL con nginx o Apache, PHP-FPM y los
+servicios instalados a mano). Se actualiza solo desde GitHub en toda la flota.
 
 ---
 
@@ -138,13 +140,25 @@ instalar con `--private-lg`.
 ## Instalación
 
 ```bash
-git clone <repo> centinela && cd centinela
+git clone https://github.com/USUARIO/centinela.git && cd centinela
 ./install.sh --domain seguridad.midominio.com --email admin@midominio.com
 ```
 
-El instalador comprueba el entorno, crea el subdominio en Plesk, publica la
+El instalador detecta la plataforma, crea el sitio del panel, publica la
 interfaz, deja el colector como servicio de systemd, amplía `open_basedir`,
-emite el certificado Let's Encrypt y pide las credenciales.
+emite el certificado Let's Encrypt y pide las credenciales. Lo que cambia
+según dónde se instale:
+
+| Plataforma | Cómo se detecta | Dónde publica el panel | Certificado | Jail de bloqueos |
+|---|---|---|---|---|
+| **Plesk** | binario `plesk` | subdominio de Plesk (usuario del vhost, `open_basedir` ampliado) | extensión Let's Encrypt | `plesk-permanent-ban` |
+| **HestiaCP** | `/usr/local/hestia` | dominio web del usuario `admin` (`--hestia-user` para otro), con una plantilla PHP-FPM derivada que amplía `open_basedir` | `v-add-letsencrypt-domain` | `centinela` (lo crea el instalador) |
+| **Sin panel** | ninguna de las anteriores | vhost propio de nginx o Apache en `/var/www/centinela`, pool PHP-FPM dedicado que corre como `centinela-web` | `certbot`, si está instalado | `centinela` (lo crea el instalador) |
+
+Sin panel hacen falta `php-cli`, `php-fpm` y nginx o Apache ya instalados; el
+instalador dice exactamente qué falta. Con `--platform` se fuerza la
+plataforma si la detección no acierta, y con `--webserver nginx|apache` el
+servidor web a usar cuando conviven los dos.
 
 ### Opciones
 
@@ -155,6 +169,11 @@ emite el certificado Let's Encrypt y pide las credenciales.
 | `--interval TIEMPO` | Frecuencia de recogida, por defecto `5min` |
 | `--weekly-day DÍA` | Día del informe: `Mon`…`Sun`, por defecto `Mon` |
 | `--weekly-hour HORA` | Hora del informe, por defecto `08` |
+| `--platform TIPO` | `plesk`, `hestia` o `generic`; por defecto se detecta |
+| `--hestia-user USUARIO` | Usuario de Hestia que aloja el panel (por defecto `admin`) |
+| `--webserver TIPO` | Sin panel: `nginx` o `apache`; por defecto el que esté activo |
+| `--update-repo REPO` | Repositorio `usuario/centinela` del que actualizarse solo |
+| `--update-mode MODO` | `auto`, `patch` o `notify` (por defecto `notify`) |
 | `--private-lg` | El looking glass exige inicio de sesión |
 | `--skip-ssl` | No emitir certificado |
 | `-y`, `--yes` | Sin confirmación interactiva |
@@ -163,8 +182,28 @@ emite el certificado Let's Encrypt y pide las credenciales.
 
 ### Requisitos
 
-Plesk Obsidian, systemd, PHP 8.1 o superior (usa el de Plesk, no hace falta
-PHP del sistema) y un MTA local, que en Plesk siempre está presente.
+systemd, PHP 8.1 o superior (en Plesk usa el suyo; en el resto el del
+sistema), `dig`, y un MTA local (`sendmail`) para los avisos. En Plesk y
+Hestia todo eso viene de serie; sin panel, además, nginx o Apache con PHP-FPM.
+
+### Actualización automática en toda la flota
+
+Cada servidor consulta una vez al día las *releases* del repositorio
+configurado. Si hay una versión nueva la descarga, verifica el `SHA256SUMS`
+de la release, hace copia del código y de la web, aplica con
+`install.sh --upgrade`, comprueba que el colector sigue funcionando y, si
+algo falla, **revierte** solo.
+
+```bash
+centinela-admin update --repo USUARIO/centinela --mode auto   # aplica todo
+centinela-admin update --mode patch                           # solo 1.x.y -> 1.x.z
+centinela-admin update --mode notify                          # solo avisa en el panel
+centinela-admin update --now                                  # comprobar ahora
+```
+
+Publicar una versión es etiquetar: `git tag v1.2.0 && git push origin v1.2.0`.
+El workflow de GitHub Actions comprueba la sintaxis, empaqueta y crea la
+release con su checksum; en las horas siguientes toda la flota la aplica.
 
 ---
 
@@ -193,6 +232,31 @@ privilegiado.**
 El código que corre como root vive en `/usr/local/centinela`, propiedad de
 root y fuera del espacio web: si un sitio alojado se viera comprometido, no
 podría modificar lo que luego se ejecuta con privilegios.
+
+### La capa de plataforma
+
+Todo lo que depende del panel de hosting pasa por `lib/platform.php`, y el
+resto del colector no sabe dónde corre. La capa responde a pocas preguntas:
+
+| Pregunta | Plesk | HestiaCP | Sin panel |
+|---|---|---|---|
+| Logs web a leer | `/var/www/vhosts/*/logs/*/access_ssl_log` y `.processed` | `/var/log/apache2/domains/*.log` (o nginx) | `/var/log/{nginx,apache2}/*access*.log`, más `web.logs` de la configuración |
+| Dominios alojados | base de datos `psa` | `v-list-web-domains` por usuario | `apache2ctl -S` y bloques `server` de `nginx -T` |
+| Dominios de correo | tabla `mail` de `psa` | `v-list-mail-domains` | `postconf` (`mydomain`, `virtual_*_domains`) |
+| Selector DKIM | `default` | `mail` | varios habituales |
+| Certificados | `/usr/local/psa/var/certificates` | `/home/*/conf/web/*/ssl/*.crt` | `/etc/letsencrypt/live/*/cert.pem`, más `certs.paths` |
+| Versiones de PHP | `plesk bin php_handler --list` | intérpretes instalados | intérpretes instalados |
+| Jail de bloqueos | `plesk-permanent-ban` | `centinela` | `centinela` |
+| Panel y su versión | módulo `plesk` | `hestia.conf` + `v-list-sys-hestia-updates` | — |
+
+Las guías de solución también se adaptan: el mismo hallazgo da el comando de
+Plesk, el de Hestia o el genérico según el servidor. Añadir una plataforma es
+añadir un caso a cada función de esa capa.
+
+Módulos específicos de un panel (`plesk.update`, `panel.update`) solo
+aparecen donde ese panel existe; los demás (SSH, fail2ban, cortafuegos,
+puertos, actualizaciones, cuentas, ataques, correo saliente, geo-valla,
+vigilante) son iguales en todas partes.
 
 | Ruta | Contenido |
 |---|---|
@@ -377,7 +441,7 @@ tocarla, un panel comprometido se autoexcluiría de la valla) y se gestiona con
 
 ```bash
 centinela-admin guard --allow-country ES
-centinela-admin guard --allow-ip 146.66.240.0/24
+centinela-admin guard --allow-ip 203.0.113.0/24
 centinela-admin guard --simulate     # qué habría pasado, contra el histórico
 centinela-admin guard --observe      # cuenta sin banear
 centinela-admin guard --enforce      # activa el baneo
@@ -528,8 +592,16 @@ systemctl status centinela-recheck.path   # ¿está vigilando la cola?
     'alert_throttle' => 86400,    // no repetir el mismo aviso en 24 h
 ],
 
+'platform'        => 'generic',            // plesk | hestia | generic; vacío = detectar
+
 'ip_allowlist'    => ['203.0.113.0/24'],   // vacía = sin filtro
 'trusted_proxies' => ['173.245.48.0/20'],  // rangos de Cloudflare, si aplica
+
+'actions' => ['jail' => 'centinela'],      // jail de fail2ban para los bloqueos del panel
+
+// Sin panel, si los logs o certificados no están en los sitios habituales:
+'web'   => ['logs'  => ['/srv/www/*/logs/access.log']],
+'certs' => ['paths' => ['/etc/ssl/misitio/*.crt']],
 
 'lg' => [
     'public'     => true,   // false = exige sesión

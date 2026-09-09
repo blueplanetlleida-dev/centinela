@@ -41,8 +41,6 @@ const CENT_PREFIX_SHARE = 0.25;
 /** IPs distintas en un dia para hablar de campana distribuida. */
 const CENT_DIST_MIN = 30;
 
-/** Jail donde caen los bloqueos hechos a mano desde el panel. */
-const CENT_BAN_JAIL = 'plesk-permanent-ban';
 
 /**
  * Procesa el log de autenticacion y actualiza el almacen de eventos.
@@ -539,7 +537,7 @@ function cross_reference_bans(array &$report, array &$all): void
             [
                 ['do' => 'Bloquealas ya desde la tabla de IPs de origen de este panel, con el boton Bloquear. '
                        . 'Tambien puedes hacerlo a mano',
-                 'cmd' => 'fail2ban-client set ' . CENT_BAN_JAIL . ' banip ' . ($lista[0]['ip'] ?? 'IP')],
+                 'cmd' => 'fail2ban-client set ' . ban_jail() . ' banip ' . ($lista[0]['ip'] ?? 'IP')],
                 ['do' => 'Mira contra que servicio estan yendo, para saber que jail deberia haberlas cogido',
                  'cmd' => 'grep -h ' . escapeshellarg((string) ($lista[0]['ip'] ?? '')) . ' /var/log/auth.log /var/log/maillog /var/log/mail.log 2>/dev/null | tail -20'],
                 ['do' => 'Comprueba que ese jail existe y esta leyendo el registro correcto',
@@ -548,7 +546,7 @@ function cross_reference_bans(array &$report, array &$all): void
                        . 'en Herramientas y configuracion > Proteccion contra ataques de fuerza bruta.'],
                 ['do' => 'Si el mismo operador aparece una y otra vez con IPs distintas, bloquea el prefijo entero '
                        . 'en vez de ir una a una',
-                 'cmd' => 'fail2ban-client set ' . CENT_BAN_JAIL . ' banip ' . ($lista[0]['prefix'] ?? 'PREFIJO')],
+                 'cmd' => 'fail2ban-client set ' . ban_jail() . ' banip ' . ($lista[0]['prefix'] ?? 'PREFIJO')],
             ],
             'fail2ban-client banned ' . ($lista[0]['ip'] ?? 'IP'),
             'Antes de bloquear un prefijo entero comprueba que no hay nada tuyo dentro: un rango de tu propio '
@@ -666,7 +664,7 @@ function build_attack_report(array $store): array
                      'cmd' => 'journalctl -u ssh --since today | grep -i "failed password" | grep -oE "from [0-9.]+" | sort | uniq -c | sort -rn | head'],
                     ['do' => 'Comprueba que fail2ban los esta bloqueando de verdad',
                      'cmd' => 'fail2ban-client status ssh'],
-                    ['do' => 'Si todo sale del mismo rango, bloquealo entero en el cortafuegos de Plesk, o de forma '
+                    ['do' => 'Si todo sale del mismo rango, bloquealo entero en el cortafuegos, o de forma '
                            . 'inmediata con fail2ban',
                      'cmd' => 'fail2ban-client set sshd banip RANGO'],
                     ['do' => 'Endurece temporalmente el jail: mas tiempo de bloqueo y menos intentos permitidos, '
@@ -781,7 +779,7 @@ function build_attack_report(array $store): array
                            . 'conocer desde dentro',
                      'cmd' => 'grep ' . escapeshellarg($primera) . ' /var/log/auth.log | grep -oE "(Invalid user|for) [^ ]+" | sort | uniq -c | sort -rn | head -20'],
                     ['do' => 'Bloqueala desde la tabla de origenes de este panel, o a mano',
-                     'cmd' => 'fail2ban-client set ' . CENT_BAN_JAIL . ' banip ' . $primera],
+                     'cmd' => 'fail2ban-client set ' . ban_jail() . ' banip ' . $primera],
                     ['do' => 'Comprueba que ninguna de esas cuentas existe de verdad y puede entrar',
                      'cmd' => 'getent passwd | awk -F: "\$3 >= 1000 {print \$1, \$7}"'],
                     ['do' => 'Con claves en vez de contrasenas, la enumeracion deja de importar: aunque acierten '
@@ -827,9 +825,9 @@ function build_attack_report(array $store): array
                          'cmd' => 'whois ' . escapeshellarg((string) $pfx) . ' | grep -iE "netname|orgname|country|abuse" | head'],
                         ['do' => 'Asegurate de que no hay nada tuyo dentro: clientes, oficinas, tu propia VPN.'],
                         ['do' => 'Bloquea el prefijo completo',
-                         'cmd' => 'fail2ban-client set ' . CENT_BAN_JAIL . ' banip ' . $pfx],
+                         'cmd' => 'fail2ban-client set ' . ban_jail() . ' banip ' . $pfx],
                         ['do' => 'Si el operador reincide con varios prefijos, planteate bloquear su ASN en el '
-                               . 'cortafuegos de Plesk en vez de rango a rango.'],
+                               . 'cortafuegos en vez de rango a rango.'],
                     ],
                     'fail2ban-client banned | grep -c ' . escapeshellarg(explode('/', (string) $pfx)[0]),
                     'Un prefijo puede tener cientos de direcciones legitimas detras. Si el rango es de un operador '
@@ -868,7 +866,10 @@ function build_attack_report(array $store): array
                     ['do' => 'Mira si las direcciones comparten operador o pais: si es asi, se corta por prefijo',
                      'cmd' => 'journalctl -u ssh --since today | grep -oE "from [0-9.]+" | sort -u | wc -l'],
                     ['do' => 'Baja el maximo de intentos y alarga la ventana de deteccion mientras dure',
-                     'cmd' => 'plesk bin ip_ban --update -max_retries 3 -ban_time_window 86400 -ban_period 86400'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin ip_ban --update -max_retries 3 -ban_time_window 86400 -ban_period 86400',
+                         'generic' => 'printf \'[DEFAULT]\\nmaxretry = 3\\nfindtime = 1d\\nbantime = 1d\\n\' > /etc/fail2ban/jail.d/zz-campana.local && fail2ban-client reload',
+                     ])],
                     ['do' => 'Si el ataque va contra SSH y usas claves, esta es la ocasion de desactivar la '
                            . 'autenticacion por contrasena: la campana se queda sin objetivo.'],
                 ],

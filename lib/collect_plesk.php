@@ -6,27 +6,6 @@
 
 declare(strict_types=1);
 
-/** Ruta del binario plesk, o null si no esta instalado. */
-function plesk_bin(): ?string
-{
-    foreach (['/usr/sbin/plesk', '/usr/local/psa/bin/plesk', '/opt/psa/bin/plesk'] as $p) {
-        if (is_executable($p)) {
-            return $p;
-        }
-    }
-    return null;
-}
-
-/** Directorio raiz de Plesk. */
-function plesk_root(): ?string
-{
-    foreach (['/usr/local/psa', '/opt/psa'] as $d) {
-        if (is_dir($d)) {
-            return $d;
-        }
-    }
-    return null;
-}
 
 /** Version instalada y si hay una release mas nueva disponible. */
 function collect_plesk(): array
@@ -162,28 +141,33 @@ function plesk_misc(array $keys): array
 /** Dominios alojados y su estado. */
 function collect_domains(): array
 {
-    $bin = plesk_bin();
-    if ($bin === null) {
-        return ['domains' => [], 'findings' => []];
-    }
-
-    $out = run([$bin, 'db', '-Ne',
-        "SELECT d.name, d.status, d.htype, IFNULL(h.php_handler_id,''), IFNULL(h.ssl,'false')
-         FROM domains d LEFT JOIN hosting h ON h.dom_id = d.id ORDER BY d.name"], 25)['out'];
-
     $domains = [];
-    foreach (explode("\n", $out) as $line) {
-        $f = explode("\t", trim($line));
-        if (count($f) < 2 || $f[0] === '') {
-            continue;
+    if (platform_is('plesk')) {
+        $bin = plesk_bin();
+        if ($bin === null) {
+            return ['domains' => [], 'findings' => []];
         }
-        $domains[] = [
-            'name'        => $f[0],
-            'status'      => (int) $f[1] === 0 ? 'activo' : 'suspendido/desactivado',
-            'type'        => $f[2] ?? '',
-            'php_handler' => $f[3] ?? '',
-            'ssl'         => ($f[4] ?? 'false') === 'true',
-        ];
+        $out = run([$bin, 'db', '-Ne',
+            "SELECT d.name, d.status, d.htype, IFNULL(h.php_handler_id,''), IFNULL(h.ssl,'false')
+             FROM domains d LEFT JOIN hosting h ON h.dom_id = d.id ORDER BY d.name"], 25)['out'];
+        foreach (explode("\n", $out) as $line) {
+            $f = explode("\t", trim($line));
+            if (count($f) < 2 || $f[0] === '') {
+                continue;
+            }
+            $domains[] = [
+                'name'        => $f[0],
+                'status'      => (int) $f[1] === 0 ? 'activo' : 'suspendido/desactivado',
+                'type'        => $f[2] ?? '',
+                'php_handler' => $f[3] ?? '',
+                'ssl'         => ($f[4] ?? 'false') === 'true',
+            ];
+        }
+    } else {
+        // Hestia y sin panel: lo que sepa la capa de plataforma
+        foreach (platform_web_domains() as $d) {
+            $domains[] = $d + ['type' => 'vrt_hst', 'php_handler' => ''];
+        }
     }
 
     $noSsl = array_values(array_filter($domains, fn($d) => !$d['ssl'] && $d['status'] === 'activo' && $d['type'] === 'vrt_hst'));
@@ -192,7 +176,7 @@ function collect_domains(): array
         $findings[] = finding('dom.nossl', SEV_WARN,
             count($noSsl) . ' dominio(s) sin SSL activo',
             implode(', ', array_slice(array_column($noSsl, 'name'), 0, 8)),
-            'Emitir certificado con la extension Let\'s Encrypt',
+            platform_text(['plesk' => 'Emitir certificado con la extension Let\'s Encrypt', 'hestia' => 'Emitir certificado: v-add-letsencrypt-domain USUARIO DOMINIO', 'generic' => 'Emitir certificado con certbot']),
             guide(
                 'Sin certificado, todo lo que se envie a ese dominio viaja en claro, incluidas las contrasenas '
                 . 'de sus formularios, y el navegador lo marca como no seguro. Let\'s Encrypt es gratuito y se '
@@ -201,11 +185,22 @@ function collect_domains(): array
                     ['do' => 'Comprueba antes que cada dominio resuelve a este servidor: sin eso, la emision falla',
                      'cmd' => 'for d in ' . implode(' ', array_map('escapeshellarg', array_slice(array_column($noSsl, 'name'), 0, 8))) . '; do echo -n "$d -> "; dig +short A "$d"; done'],
                     ['do' => 'Emite el certificado de cada uno, con su alias www',
-                     'cmd' => 'plesk bin extension --exec letsencrypt cli.php -d DOMINIO -d www.DOMINIO'
-                            . ' -m admin@' . implode('.', array_slice(explode('.', php_uname('n')), 1)) . ' --secure-domain'],
-                    ['do' => 'Activa la redireccion permanente a https en Hosting y DNS > Ajustes de hosting.'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin extension --exec letsencrypt cli.php -d DOMINIO -d www.DOMINIO'
+                                    . ' -m admin@' . implode('.', array_slice(explode('.', php_uname('n')), 1)) . ' --secure-domain',
+                         'hestia'  => 'v-add-letsencrypt-domain USUARIO DOMINIO www.DOMINIO',
+                         'generic' => 'certbot --nginx -d DOMINIO -d www.DOMINIO   # o --apache',
+                     ])],
+                    ['do' => platform_text([
+                        'plesk'   => 'Activa la redireccion permanente a https en Hosting y DNS > Ajustes de hosting.',
+                        'hestia'  => 'Activa «Forzar HTTPS» en la ficha del dominio: v-add-web-domain-ssl-force USUARIO DOMINIO',
+                        'generic' => 'Anade la redireccion permanente de http a https en el vhost.',
+                    ])],
                 ],
-                'plesk bin subscription --list >/dev/null && plesk bin certificate --list -domain DOMINIO',
+                platform_text([
+                    'plesk'   => 'plesk bin subscription --list >/dev/null && plesk bin certificate --list -domain DOMINIO',
+                    'generic' => 'echo | openssl s_client -connect DOMINIO:443 -servername DOMINIO 2>/dev/null | openssl x509 -noout -subject -enddate',
+                ]),
                 'Emitir un certificado para un dominio que todavia apunta a otro servidor falla y consume el '
                 . 'cupo de intentos de Let\'s Encrypt: comprueba primero el DNS.',
                 'https://docs.plesk.com/es-ES/obsidian/administrator-guide/73607/'
@@ -218,9 +213,8 @@ function collect_domains(): array
 /** Certificados instalados y su caducidad. */
 function collect_certificates(): array
 {
-    $root = plesk_root();
     $certs = [];
-    $files = $root ? (glob($root . '/var/certificates/*') ?: []) : [];
+    $files = platform_cert_files();
 
     foreach ($files as $file) {
         if (!is_file($file)) {
@@ -274,12 +268,20 @@ function collect_certificates(): array
                 . 'clientes dejan de poder enviar.',
                 [
                     ['do' => 'Mira cual es y desde cuando',
-                     'cmd' => 'plesk bin certificate --list -admin; echo | openssl s_client -connect DOMINIO:443 -servername DOMINIO 2>/dev/null | openssl x509 -noout -subject -dates'],
+                     'cmd' => 'echo | openssl s_client -connect DOMINIO:443 -servername DOMINIO 2>/dev/null | openssl x509 -noout -subject -dates'],
                     ['do' => 'Si es de Let\'s Encrypt, vuelve a emitirlo',
-                     'cmd' => 'plesk bin extension --exec letsencrypt cli.php -d DOMINIO -d www.DOMINIO -m admin@DOMINIO'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin extension --exec letsencrypt cli.php -d DOMINIO -d www.DOMINIO -m admin@DOMINIO',
+                         'hestia'  => 'v-add-letsencrypt-domain USUARIO DOMINIO www.DOMINIO',
+                         'generic' => 'certbot renew --force-renewal --cert-name DOMINIO',
+                     ])],
                     ['do' => 'Comprueba por que no se renovo solo: casi siempre el dominio dejo de resolver aqui '
                            . 'o la validacion por fichero quedo bloqueada por una redireccion',
-                     'cmd' => 'plesk log letsencrypt 2>/dev/null | tail -40'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk log letsencrypt 2>/dev/null | tail -40',
+                         'hestia'  => 'tail -40 /var/log/hestia/LE-*.log 2>/dev/null',
+                         'generic' => 'tail -40 /var/log/letsencrypt/letsencrypt.log',
+                     ])],
                     ['do' => 'Repasa que la tarea de renovacion sigue programada',
                      'cmd' => 'systemctl list-timers | grep -i letsencrypt'],
                 ],
@@ -295,14 +297,22 @@ function collect_certificates(): array
                 'Let\'s Encrypt renueva a los 60 dias de vida, asi que quedar por debajo de 14 significa que la '
                 . 'renovacion automatica ya ha fallado varias veces sin que nadie se entere.',
                 [
-                    ['do' => 'Mira el registro de la extension para ver el motivo del fallo',
-                     'cmd' => 'plesk log letsencrypt 2>/dev/null | tail -40'],
+                    ['do' => 'Mira el registro de la renovacion para ver el motivo del fallo',
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk log letsencrypt 2>/dev/null | tail -40',
+                         'hestia'  => 'tail -40 /var/log/hestia/LE-*.log 2>/dev/null',
+                         'generic' => 'tail -40 /var/log/letsencrypt/letsencrypt.log',
+                     ])],
                     ['do' => 'Comprueba que el dominio sigue resolviendo a este servidor',
                      'cmd' => 'dig +short A DOMINIO'],
                     ['do' => 'Comprueba que la ruta de validacion no esta redirigida ni bloqueada',
                      'cmd' => 'curl -sI http://DOMINIO/.well-known/acme-challenge/prueba | head -3'],
                     ['do' => 'Fuerza la renovacion una vez resuelto lo anterior',
-                     'cmd' => 'plesk bin extension --exec letsencrypt cli.php -d DOMINIO -m admin@DOMINIO'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin extension --exec letsencrypt cli.php -d DOMINIO -m admin@DOMINIO',
+                         'hestia'  => 'v-add-letsencrypt-domain USUARIO DOMINIO',
+                         'generic' => 'certbot renew --force-renewal --cert-name DOMINIO',
+                     ])],
                 ],
                 'echo | openssl s_client -connect DOMINIO:443 -servername DOMINIO 2>/dev/null | openssl x509 -noout -enddate'
             ));
@@ -324,23 +334,7 @@ function collect_php(): array
         '8.3' => '2027-12-31', '8.4' => '2028-12-31', '8.5' => '2029-12-31',
     ];
 
-    $bin = plesk_bin();
-    $versions = [];
-
-    if ($bin !== null) {
-        $out = run([$bin, 'bin', 'php_handler', '--list'], 25)['out'];
-        foreach (explode("\n", $out) as $line) {
-            $f = preg_split('/\s{2,}/', trim($line));
-            if (count($f) < 5 || !preg_match('/^\d+\.\d+/', $f[2] ?? '')) {
-                continue;
-            }
-            $v = $f[3] ?? '';
-            if ($v === '' || isset($versions[$v])) {
-                continue;
-            }
-            $versions[$v] = ['version' => $v, 'full' => $f[2], 'status' => trim((string) end($f))];
-        }
-    }
+    $versions = platform_php_versions();
 
     $now  = time();
     $out  = [];
@@ -373,14 +367,29 @@ function collect_php(): array
                 . 'un solo sitio usandola, ese sitio es la via de entrada mas facil al servidor.',
                 [
                     ['do' => 'Averigua que dominios la estan usando',
-                     'cmd' => 'plesk db -Ne "SELECT d.name, h.php_handler_id FROM domains d JOIN hosting h ON h.dom_id=d.id ORDER BY h.php_handler_id"'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk db -Ne "SELECT d.name, h.php_handler_id FROM domains d JOIN hosting h ON h.dom_id=d.id ORDER BY h.php_handler_id"',
+                         'hestia'  => 'for u in $(v-list-users plain | cut -f1); do v-list-web-domains $u plain | awk -v u=$u \'{print u, $1, $NF}\'; done',
+                         'generic' => 'grep -rhoE "php[0-9.]+-fpm[^;\\"]*" /etc/nginx /etc/apache2 2>/dev/null | sort | uniq -c',
+                     ])],
                     ['do' => 'Avisa al responsable de cada sitio: subir de version puede requerir tocar el codigo.'],
                     ['do' => 'Cambia el manejador de un dominio a una version con soporte',
-                     'cmd' => 'plesk bin domain --update DOMINIO -php_handler_id plesk-php84-fpm'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin domain --update DOMINIO -php_handler_id plesk-php84-fpm',
+                         'hestia'  => 'v-change-web-domain-backend-tpl USUARIO DOMINIO PHP-8_4',
+                         'generic' => 'sed -i "s#php8.1-fpm#php8.4-fpm#" /etc/nginx/sites-available/DOMINIO && nginx -t && systemctl reload nginx',
+                     ])],
                     ['do' => 'Cuando no quede nadie, retira el paquete para que no vuelva a usarse',
-                     'cmd' => 'plesk installer --select-release-current --remove-component php8.1'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk installer --select-release-current --remove-component php8.1',
+                         'hestia'  => 'v-delete-sys-php 8.1',
+                         'generic' => 'apt-get purge "php8.1*"',
+                     ])],
                 ],
-                'plesk db -Ne "SELECT DISTINCT php_handler_id FROM hosting"',
+                platform_text([
+                    'plesk'   => 'plesk db -Ne "SELECT DISTINCT php_handler_id FROM hosting"',
+                    'generic' => 'ls /usr/bin/php?.? /usr/bin/php?.??',
+                ]),
                 'Cambiar de version de PHP puede romper un sitio antiguo. Hazlo dominio a dominio y con una copia '
                 . 'de seguridad, no en bloque.'
             ));
@@ -393,13 +402,28 @@ function collect_php(): array
                 . 'dia que aparece un fallo critico es una urgencia.',
                 [
                     ['do' => 'Lista que dominios dependen de esas versiones',
-                     'cmd' => 'plesk db -Ne "SELECT d.name, h.php_handler_id FROM domains d JOIN hosting h ON h.dom_id=d.id ORDER BY h.php_handler_id"'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk db -Ne "SELECT d.name, h.php_handler_id FROM domains d JOIN hosting h ON h.dom_id=d.id ORDER BY h.php_handler_id"',
+                         'hestia'  => 'for u in $(v-list-users plain | cut -f1); do v-list-web-domains $u plain | awk -v u=$u \'{print u, $1, $NF}\'; done',
+                         'generic' => 'grep -rhoE "php[0-9.]+-fpm[^;\\"]*" /etc/nginx /etc/apache2 2>/dev/null | sort | uniq -c',
+                     ])],
                     ['do' => 'Instala la version nueva para poder probar sin quitar la antigua',
-                     'cmd' => 'plesk installer --select-release-current --install-component php8.4'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk installer --select-release-current --install-component php8.4',
+                         'hestia'  => 'v-add-sys-php 8.4',
+                         'generic' => 'apt-get install php8.4-fpm',
+                     ])],
                     ['do' => 'Prueba sitio a sitio y ve cambiando el manejador',
-                     'cmd' => 'plesk bin domain --update DOMINIO -php_handler_id plesk-php84-fpm'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk bin domain --update DOMINIO -php_handler_id plesk-php84-fpm',
+                         'hestia'  => 'v-change-web-domain-backend-tpl USUARIO DOMINIO PHP-8_4',
+                         'generic' => 'sed -i "s#php8.1-fpm#php8.4-fpm#" /etc/nginx/sites-available/DOMINIO && nginx -t && systemctl reload nginx',
+                     ])],
                 ],
-                'plesk db -Ne "SELECT DISTINCT php_handler_id FROM hosting"'
+                platform_text([
+                    'plesk'   => 'plesk db -Ne "SELECT DISTINCT php_handler_id FROM hosting"',
+                    'generic' => 'ls /usr/bin/php?.? /usr/bin/php?.??',
+                ])
             ));
     }
 
@@ -435,20 +459,30 @@ function collect_security_products(): array
     if (!$modsec['installed']) {
         $findings[] = finding('sec.modsec', SEV_WARN, 'ModSecurity no instalado',
             'Sin cortafuegos de aplicacion web delante de los sitios',
-            'Activar en Herramientas y configuracion > Firewall de aplicaciones web',
+            platform_text([
+                'plesk'   => 'Activar en Herramientas y configuracion > Firewall de aplicaciones web',
+                'generic' => 'Instalar libapache2-mod-security2 con el conjunto de reglas OWASP CRS',
+            ]),
             guide(
                 'Es el filtro que para inyecciones SQL, subidas de shells y exploits conocidos de WordPress antes '
                 . 'de que lleguen al codigo del sitio. Sin el, la unica defensa es que cada sitio este al dia.',
                 [
                     ['do' => 'Instala el componente',
-                     'cmd' => 'plesk installer --select-release-current --install-component modsecurity'],
-                    ['do' => 'En Herramientas y configuracion > Firewall de aplicaciones web, elige un conjunto de '
-                           . 'reglas (OWASP o Comodo) y ponlo primero en modo solo deteccion.'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk installer --select-release-current --install-component modsecurity',
+                         'generic' => 'apt-get install libapache2-mod-security2 modsecurity-crs && a2enmod security2',
+                     ])],
+                    ['do' => platform_text([
+                        'plesk'   => 'En Herramientas y configuracion > Firewall de aplicaciones web, elige un conjunto de '
+                                   . 'reglas (OWASP o Comodo) y ponlo primero en modo solo deteccion.',
+                        'generic' => 'Copia modsecurity.conf-recommended a modsecurity.conf y deja SecRuleEngine en '
+                                   . 'DetectionOnly mientras revisas falsos positivos.',
+                    ])],
                     ['do' => 'Revisa unos dias los falsos positivos antes de pasar a bloqueo',
                      'cmd' => 'tail -100 /var/log/modsec_audit.log 2>/dev/null'],
                     ['do' => 'Cuando este limpio, pasa el motor a activo.'],
                 ],
-                'plesk bin server_pref --show-web-app-firewall 2>/dev/null || grep -r SecRuleEngine /etc/nginx/modsecurity.conf 2>/dev/null',
+                'grep -rhE "^\\s*SecRuleEngine" /etc/apache2 /etc/httpd /etc/nginx 2>/dev/null | head -3',
                 'Activar reglas en modo bloqueo de golpe suele tirar formularios y paneles de administracion '
                 . 'legitimos: pasa siempre por la fase de solo deteccion.'
             ));
@@ -466,7 +500,10 @@ function collect_security_products(): array
                     ['do' => 'Mira que reglas saltarian con el trafico real',
                      'cmd' => 'tail -100 /var/log/modsec_audit.log 2>/dev/null'],
                     ['do' => 'Pasa a activo cuando no queden falsos positivos, y recarga el servidor web',
-                     'cmd' => 'plesk sbin httpdmng --reconfigure-all'],
+                     'cmd' => platform_text([
+                         'plesk'   => 'plesk sbin httpdmng --reconfigure-all',
+                         'generic' => 'apache2ctl -t && systemctl reload apache2',
+                     ])],
                 ],
                 'grep -r "SecRuleEngine" /etc/nginx/modsecurity.conf 2>/dev/null'
             ));
@@ -505,8 +542,11 @@ function collect_security_products(): array
                          'cmd' => 'systemctl status sav-protect plesk-sophos-av --no-pager -l 2>/dev/null | head -30'],
                         ['do' => 'Si quieres analisis de correo, arrancalo y dejalo habilitado',
                          'cmd' => 'systemctl enable --now sav-protect'],
-                        ['do' => 'Si no lo usas, desinstala la extension para no arrastrarla',
-                         'cmd' => 'plesk bin extension --uninstall sophos-av'],
+                        ['do' => 'Si no lo usas, desinstalalo para no arrastrarlo',
+                         'cmd' => platform_text([
+                             'plesk'   => 'plesk bin extension --uninstall sophos-av',
+                             'generic' => '/opt/sophos-av/uninstall.sh',
+                         ])],
                     ],
                     'systemctl is-active sav-protect 2>/dev/null || systemctl is-active plesk-sophos-av'
                 ));

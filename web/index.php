@@ -479,7 +479,7 @@ if (is_array($upInfo) && !empty($upInfo['latest'])): ?>
             'steps' => [
                 ['do' => 'Permite tu pais', 'cmd' => 'centinela-admin guard --allow-country ES'],
                 ['do' => 'Anade tus rangos fijos (oficina, VPN, red del proveedor)',
-                 'cmd' => 'centinela-admin guard --allow-ip 146.66.240.0/20'],
+                 'cmd' => 'centinela-admin guard --allow-ip 203.0.113.0/24'],
                 ['do' => 'Simula contra el historico: cuantas IPs habria baneado y, sobre todo, si algun acceso tuyo caeria fuera',
                  'cmd' => 'centinela-admin guard --simulate'],
                 ['do' => 'Si prefieres verla trabajar unos dias sin banear, dejala en observacion',
@@ -626,6 +626,15 @@ if (is_array($upInfo) && !empty($upInfo['latest'])): ?>
         <?php if (!empty($st['plesk']['upgrade'])): ?>
           <br><span style="color:var(--warning);font-size:12px;">→ <?= h($st['plesk']['upgrade']['version']) ?></span>
         <?php endif; ?></dd>
+      <?php elseif (!empty($st['panel']['version'])): ?>
+      <dt><?= h($st['panel']['label'] ?? 'Panel') ?></dt>
+      <dd><?= h($st['panel']['version']) ?>
+        <?php if (!empty($st['panel']['updates'])): ?>
+          <br><span style="color:var(--warning);font-size:12px;">→ actualizacion disponible</span>
+        <?php endif; ?></dd>
+      <?php elseif (!empty($st['panel']['label'])): ?>
+      <dt>Plataforma</dt>
+      <dd><?= h($st['panel']['label']) ?></dd>
       <?php endif; ?>
     </dl>
   </div>

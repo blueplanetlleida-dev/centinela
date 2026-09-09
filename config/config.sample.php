@@ -10,6 +10,9 @@
 return [
     'timezone' => 'Europe/Madrid',
 
+    // Plataforma: 'plesk', 'hestia' o 'generic' (Linux sin panel). Vacio = detectar.
+    'platform' => '',
+
     'auth' => [
         'user'          => 'admin',
         // Generar con: centinela-admin passwd
@@ -27,6 +30,19 @@ return [
     // Si hay un proxy delante (Cloudflare, balanceador), sus rangos van aqui
     // para que la IP real del visitante se lea de las cabeceras.
     'trusted_proxies' => [],
+
+    // Bloqueos desde el panel y la geo-valla.
+    'actions' => [
+        // Jail de fail2ban. Vacio = el de la plataforma: plesk-permanent-ban
+        // en Plesk, «centinela» (lo crea el instalador) en el resto.
+        'jail'      => '',
+        'never_ban' => [],
+    ],
+
+    // Sin panel: patrones (glob) de los logs web y de los certificados, si no
+    // estan en /var/log/nginx, /var/log/apache2 o /etc/letsencrypt/live.
+    'web'   => ['logs'  => []],
+    'certs' => ['paths' => []],
 
     'mail' => [
         'enabled'        => true,

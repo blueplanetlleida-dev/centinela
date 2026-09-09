@@ -291,6 +291,11 @@ function render_weekly_report(array $st): array
         $rows[] = ['Plesk', esc($pl['version'] ?? '?')
             . (!empty($pl['upgrade']) ? ' <span style="color:#b54708;font-weight:600;">→ ' . esc($pl['upgrade']['version']) . ' disponible</span>' : ' <span style="color:#027a48;">(al dia)</span>')];
     }
+    if (!empty($st['panel']['version']) && ($st['panel']['platform'] ?? '') !== 'plesk') {
+        $pn = $st['panel'];
+        $rows[] = [esc($pn['label'] ?? 'Panel'), esc($pn['version'])
+            . (!empty($pn['updates']) ? ' <span style="color:#b54708;font-weight:600;">→ actualizacion disponible</span>' : ' <span style="color:#027a48;">(al dia)</span>')];
+    }
     $upd = $st['updates'] ?? [];
     $rows[] = ['Actualizaciones', ((int) ($upd['total'] ?? 0)) . ' pendientes'
         . (($upd['security'] ?? 0) > 0 ? ' <span style="color:#b42318;font-weight:600;">(' . $upd['security'] . ' de seguridad)</span>' : '')];
@@ -397,6 +402,9 @@ function render_weekly_text(array $st, int $weekAttacks, string $deltaTxt): stri
     $l[] = '  Uptime: ' . human_uptime((int) ($st['system']['uptime_sec'] ?? 0));
     if (!empty($st['plesk']['installed'])) {
         $l[] = '  Plesk:  ' . ($st['plesk']['version'] ?? '?') . (!empty($st['plesk']['upgrade']) ? '  -> ' . $st['plesk']['upgrade']['version'] . ' disponible' : '  (al dia)');
+    }
+    if (!empty($st['panel']['version']) && ($st['panel']['platform'] ?? '') !== 'plesk') {
+        $l[] = '  ' . str_pad(($st['panel']['label'] ?? 'Panel') . ':', 8) . $st['panel']['version'] . (!empty($st['panel']['updates']) ? '  -> actualizacion disponible' : '  (al dia)');
     }
     $l[] = '  Paquetes pendientes: ' . ($st['updates']['total'] ?? 0) . ' (' . ($st['updates']['security'] ?? 0) . ' de seguridad)';
     $l[] = '';
