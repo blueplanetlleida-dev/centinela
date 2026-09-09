@@ -11,7 +11,7 @@
 #
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.1.2"
 PREFIX="/usr/local/centinela"
 STATE_DIR="/var/lib/centinela"
 CONFIG_DIR="/etc/centinela"

@@ -33,7 +33,7 @@ require $centResolve('totp.php');
 require __DIR__ . '/ratelimit.php';
 
 if (!defined('CENT_VERSION')) {
-    define('CENT_VERSION', '1.1.1');
+    define('CENT_VERSION', '1.1.2');
 }
 
 $CFG = load_config();
