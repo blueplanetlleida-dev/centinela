@@ -418,6 +418,42 @@ case 'guard':
 case 'update':
     $sub = $argv[2] ?? '--show';
     $cfg['update'] = (array) ($cfg['update'] ?? []);
+    // --repo y --mode se pueden combinar en una sola llamada:
+    //   centinela-admin update --repo usuario/centinela --mode auto
+    if (in_array($sub, ['--repo', '--mode'], true)) {
+        $args = array_slice($argv, 2);
+        $hecho = [];
+        for ($i = 0; $i < count($args); $i++) {
+            $v = (string) ($args[$i + 1] ?? '');
+            switch ($args[$i]) {
+                case '--repo':
+                    if (!preg_match('#^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$#', $v)) {
+                        cerr('Uso: update --repo usuario/centinela'); exit(1);
+                    }
+                    $cfg['update']['repo'] = $v;
+                    $hecho[] = "Repositorio de actualizacion: {$v}";
+                    $i++;
+                    break;
+                case '--mode':
+                    $v = strtolower($v);
+                    if (!in_array($v, ['auto', 'patch', 'notify'], true)) {
+                        cerr('Uso: update --mode auto|patch|notify'); exit(1);
+                    }
+                    $cfg['update']['mode'] = $v;
+                    $hecho[] = "Modo de actualizacion: {$v}";
+                    $i++;
+                    break;
+                default:
+                    cerr('Opcion desconocida para update: ' . $args[$i]); exit(1);
+            }
+        }
+        if (empty($cfg['update']['mode'])) { $cfg['update']['mode'] = 'notify'; }
+        unset($cfg['_file']);
+        if (!save_config($cfgFile, $cfg)) { exit(1); }
+        foreach ($hecho as $h) { cwrite($h); }
+        cwrite('Comprueba con: centinela-update --check');
+        exit(0);
+    }
     switch ($sub) {
         case '--show':
             $u = $cfg['update'];
@@ -433,29 +469,6 @@ case 'update':
             }
             exit(0);
 
-        case '--repo':
-            $repo = trim((string) ($argv[3] ?? ''));
-            if (!preg_match('#^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$#', $repo)) {
-                cerr('Uso: update --repo usuario/centinela'); exit(1);
-            }
-            $cfg['update']['repo'] = $repo;
-            if (empty($cfg['update']['mode'])) { $cfg['update']['mode'] = 'notify'; }
-            unset($cfg['_file']);
-            if (!save_config($cfgFile, $cfg)) { exit(1); }
-            cwrite("Repositorio de actualizacion: {$repo}");
-            cwrite('Comprueba con: centinela-update --check');
-            exit(0);
-
-        case '--mode':
-            $m = strtolower((string) ($argv[3] ?? ''));
-            if (!in_array($m, ['auto', 'patch', 'notify'], true)) {
-                cerr('Uso: update --mode auto|patch|notify'); exit(1);
-            }
-            $cfg['update']['mode'] = $m;
-            unset($cfg['_file']);
-            if (!save_config($cfgFile, $cfg)) { exit(1); }
-            cwrite("Modo de actualizacion: {$m}");
-            exit(0);
 
         case '--now':
             // Lanza el actualizador de inmediato (respeta la politica salvo --force)

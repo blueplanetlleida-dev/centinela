@@ -139,6 +139,9 @@ instalar con `--private-lg`.
 
 ## Instalación
 
+Guía paso a paso, con requisitos por plataforma y puesta en marcha:
+[docs/INSTALACION.md](docs/INSTALACION.md).
+
 ```bash
 git clone https://github.com/USUARIO/centinela.git && cd centinela
 ./install.sh --domain seguridad.midominio.com --email admin@midominio.com
