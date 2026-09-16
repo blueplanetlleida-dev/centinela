@@ -171,6 +171,17 @@ code, .mono { font-family: var(--mono); font-size: 0.92em; }
 .finding .autofix:disabled { cursor: default; opacity: .35; }
 .finding .autofix:disabled:hover { background: transparent; color: var(--series-text); }
 
+/* Salida en vivo de una correccion larga. Altura fija y anclada abajo: mientras
+   apt trabaja se ven siempre las ultimas lineas sin que la tarjeta pegue saltos
+   cada vez que llega una nueva. */
+.verdict .joblog {
+  margin: 8px 0 0; padding: 8px 10px; max-height: 150px; overflow-y: auto;
+  background: var(--surface-2); border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; line-height: 1.5; color: var(--ink-2);
+  white-space: pre-wrap; word-break: break-word;
+}
+
 /* ------------------------------------------------------ guia de solucion -- */
 .guide { margin-top: 9px; }
 .guide summary {

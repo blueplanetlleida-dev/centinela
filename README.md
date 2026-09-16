@@ -377,11 +377,11 @@ web ni un buzón sin responder.
 | `sophos.start` | `sec.sophos` | Arranca el antivirus y el temporizador de firmas |
 | `plesk.autoupdates` | `plesk.updater` | Activa el actualizador del panel |
 
+| `upd.security.apply` | `upd.security` | Aplica las actualizaciones de seguridad *(larga)* |
+| `upd.backlog.apply` | `upd.backlog` | Actualiza los paquetes pendientes *(larga)* |
+
 Qué se ha dejado fuera **a propósito**:
 
-- Lo que tarda minutos (`apt-get upgrade`): el ejecutor tiene un TTL de 5
-  minutos y la unidad un `TimeoutStartSec`. Necesita un modelo de trabajo largo
-  con estado y sondeo, que es otra cosa.
 - Lo que borra datos (`journalctl --vacuum-time`): libera disco, pero se lleva
   registros que quizá hagan falta para investigar.
 - Lo que puede dejarte fuera del servidor (`PasswordAuthentication no`). Ese no
@@ -398,6 +398,34 @@ y *no se ha podido aplicar*.
 Añadir una corrección nueva es una entrada en `fix_catalog()`, nada más. El
 campo `available` sirve para no ofrecer el botón donde no aplica: el antivirus
 de Plesk es `plesk-sophos-av` en unas instalaciones y `sav-protect` en otras.
+
+#### Las correcciones largas
+
+`apt` tarda minutos y no cabe en el `TimeoutStartSec` del ejecutor. Las
+entradas marcadas `long` no se ejecutan ahí: el ejecutor abre un trabajo en
+`jobs/<id>.json`, lo lanza en una unidad transitoria y contesta en el acto.
+
+```
+  centinela-action ──systemd-run --unit=centinela-job──▶ centinela-job (root)
+         │                                                     │ escribe
+         │ responde «en marcha»                                ▼
+         ▼                                          jobs/<id>.json
+  panel ──api.php?v=job&id=──────────────────────────────▶ progreso en vivo
+```
+
+La unidad transitoria **se llama siempre igual**. No es un descuido: es lo que
+impide que se solapen dos trabajos. systemd se niega a arrancar una unidad que
+ya existe, así que la exclusión mutua la garantiza él y no un cerrojo nuestro —
+dos `apt` a la vez acabarían chocando por el cerrojo de dpkg de todas formas.
+
+La salida se sigue **en vivo**: `run()` acepta un callback que recibe cada trozo
+según sale, y el trabajo lo vuelca al fichero cada dos segundos. Sin eso, un apt
+de tres minutos sin una sola línea en pantalla parece colgado.
+
+Las dos correcciones largas llevan `warn`, que el panel destaca en la
+confirmación: reinician los servicios que se actualicen. Y si al terminar queda
+un reinicio pendiente, el trabajo lo dice — es la pregunta inmediata de quien
+acaba de pulsar. Reiniciar sigue sin tener botón.
 
 ### Cruce con fail2ban
 

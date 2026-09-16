@@ -1,0 +1,140 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Centinela - ejecutor de una correccion larga.
+ *
+ * Lo arranca centinela-action en una unidad transitoria de systemd, porque hay
+ * correcciones (apt, basicamente) que tardan minutos y no caben en el
+ * TimeoutStartSec del ejecutor de la cola.
+ *
+ * No recibe ningun comando: recibe el identificador de un trabajo que ya existe
+ * en disco, y de ahi saca la clave de la correccion, que vuelve a resolver
+ * contra el catalogo. Es la misma regla de siempre: lo que viaja es una clave,
+ * lo que se ejecuta lo decide el catalogo.
+ *
+ * Va escribiendo el progreso en jobs/<id>.json para que el panel pueda
+ * enseNar por donde va sin esperar al final.
+ */
+
+declare(strict_types=1);
+
+$base = dirname(__DIR__);
+require $base . '/lib/util.php';
+require $base . '/lib/config.php';
+require $base . '/lib/platform.php';
+require $base . '/lib/fixes.php';
+
+$opts = getopt('', ['id:', 'state:', 'group:', 'help']);
+if (isset($opts['help']) || !isset($opts['id'])) {
+    fwrite(STDOUT, "Uso: centinela-job --id <id> [--state DIR] [--group GRUPO]\n");
+    exit(isset($opts['help']) ? 0 : 1);
+}
+if (posix_geteuid() !== 0) {
+    fwrite(STDERR, "centinela-job debe ejecutarse como root.\n");
+    exit(1);
+}
+
+$stateDir = rtrim((string) ($opts['state'] ?? '/var/lib/centinela'), '/');
+$group    = $opts['group'] ?? null;
+$id       = (string) preg_replace('/[^a-f0-9]/i', '', (string) $opts['id']);
+state_dir($stateDir);
+
+$job = job_read($stateDir, $id);
+if ($job === null) {
+    fwrite(STDERR, "No hay ningun trabajo con ese identificador.\n");
+    exit(1);
+}
+
+/** Deja constancia del progreso y lo hace visible al panel de inmediato. */
+$guardar = function (array $j) use ($stateDir, $group): void {
+    job_write($stateDir, $j, $group);
+};
+
+/** ANade lineas al registro del trabajo, recortando lo que no aporta. */
+$anotar = function (array &$j, string $texto): void {
+    foreach (explode("\n", $texto) as $linea) {
+        $linea = rtrim($linea);
+        if ($linea !== '') {
+            $j['log'][] = substr($linea, 0, 300);
+        }
+    }
+};
+
+$def = fix_get((string) ($job['fix'] ?? ''));
+if ($def === null || empty($def['long'])) {
+    // Puede pasar si el catalogo cambia entre que se encola y se ejecuta, por
+    // ejemplo tras una actualizacion de Centinela a mitad.
+    $job['status']   = 'error';
+    $job['detail']   = $def === null
+        ? 'la correccion ya no existe en el catalogo'
+        : 'la correccion ha dejado de ser un trabajo largo';
+    $job['finished'] = time();
+    $guardar($job);
+    exit(1);
+}
+
+$pasos  = ($def['steps'])();
+$env    = (array) ($def['env'] ?? []);
+$espera = max(60, (int) ($def['timeout'] ?? 600));
+
+$job['steps_total'] = count($pasos);
+$job['status']      = 'running';
+$guardar($job);
+
+foreach ($pasos as $i => $cmd) {
+    if (!is_array($cmd) || !fix_argv_ok($cmd)) {
+        $job['status'] = 'error';
+        $job['detail'] = 'el catalogo produjo un comando que no se puede ejecutar';
+        break;
+    }
+
+    $job['step']       = $i + 1;
+    $job['step_label'] = basename($cmd[0]) . ' ' . implode(' ', array_slice($cmd, 1, 2));
+    $guardar($job);
+
+    // La salida se va anotando segun sale, pero el fichero solo se escribe cada
+    // par de segundos: el panel sondea a ese ritmo y no tiene sentido reescribir
+    // el JSON por cada linea que suelta apt.
+    $ultimo = 0.0;
+    $r = run($cmd, $espera, null, $env, function (string $trozo) use (&$job, &$ultimo, $anotar, $guardar): void {
+        $anotar($job, $trozo);
+        if (microtime(true) - $ultimo >= 2.0) {
+            $ultimo = microtime(true);
+            $guardar($job);
+        }
+    });
+
+    if (!$r['ok']) {
+        $job['status'] = 'error';
+        $job['detail'] = 'fallo en «' . basename($cmd[0]) . '»'
+                       . ($r['code'] === 124 ? ': se agoto el tiempo de espera' : ' (codigo ' . $r['code'] . ')');
+        break;
+    }
+    $guardar($job);
+}
+
+if (($job['status'] ?? '') !== 'error') {
+    $job['status'] = 'ok';
+    $job['detail'] = 'terminado';
+
+    // Tras actualizar paquetes puede quedar pendiente un reinicio. Merece la
+    // pena decirlo aqui: es la pregunta inmediata de quien acaba de pulsar.
+    if (is_file('/var/run/reboot-required')) {
+        $job['detail'] .= '; queda pendiente reiniciar la maquina';
+        $job['reboot_required'] = true;
+    }
+}
+
+$job['finished'] = time();
+$guardar($job);
+
+// Que el panel vea el resultado reflejado en las incidencias, no solo en el
+// trabajo: se pide una recogida completa, igual que hacen las acciones cortas.
+@file_put_contents(
+    $stateDir . '/queue/recheck.req',
+    json_encode(['at' => time(), 'user' => 'centinela-job'])
+);
+@chmod($stateDir . '/queue/recheck.req', 0660);
+
+jobs_prune($stateDir);
+exit(($job['status'] === 'ok') ? 0 : 1);

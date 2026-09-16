@@ -228,6 +228,27 @@ function read_actions(): array
     return is_array($d) ? $d : [];
 }
 
+/**
+ * Progreso de una correccion larga.
+ *
+ * El fichero lo escribe el trabajo mientras corre; aqui solo se lee. Como
+ * cualquier otra cosa del directorio de estado, si no se puede leer se
+ * devuelve null y quien llama decide que contar.
+ */
+function read_job(string $id): ?array
+{
+    global $CFG;
+    if (!preg_match('/^[a-f0-9]{8,32}$/', $id)) {
+        return null;
+    }
+    $f = rtrim($CFG['state_dir'] ?? '/var/lib/centinela', '/') . '/jobs/' . $id . '.json';
+    if (!is_readable($f)) {
+        return null;
+    }
+    $d = json_decode((string) file_get_contents($f), true);
+    return is_array($d) ? $d : null;
+}
+
 /** Edad del estado en segundos, o null si no hay estado. */
 function state_age(?array $st): ?int
 {

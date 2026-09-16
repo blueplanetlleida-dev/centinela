@@ -14,12 +14,28 @@ const CENT_VERSION = '1.1.2';
  * Ejecuta un comando sin shell. Todos los argumentos van en array, asi que
  * no hay interpolacion ni posibilidad de inyeccion.
  *
+ * $envExtra aNade variables al entorno minimo. Hace falta para apt, que sin
+ * DEBIAN_FRONTEND=noninteractive se queda esperando a que alguien conteste a
+ * un dialogo que nadie va a ver.
+ *
+ * $onOutput, si se pasa, recibe cada trozo de salida segun aparece, para poder
+ * enseNar el progreso de un comando largo antes de que termine.
+ *
  * @return array{out:string, err:string, code:int, ok:bool}
  */
-function run(array $cmd, int $timeout = 15, ?string $stdin = null): array
+function run(
+    array $cmd,
+    int $timeout = 15,
+    ?string $stdin = null,
+    ?array $envExtra = null,
+    ?callable $onOutput = null
+): array
 {
     $desc = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
     $env  = ['PATH' => '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL' => 'C'];
+    foreach ((array) $envExtra as $k => $v) {
+        $env[(string) $k] = (string) $v;
+    }
 
     $proc = @proc_open($cmd, $desc, $pipes, null, $env);
     if (!is_resource($proc)) {
@@ -37,8 +53,16 @@ function run(array $cmd, int $timeout = 15, ?string $stdin = null): array
     $deadline = microtime(true) + $timeout;
 
     while (true) {
-        $out .= stream_get_contents($pipes[1]);
-        $err .= stream_get_contents($pipes[2]);
+        $trozoO = (string) stream_get_contents($pipes[1]);
+        $trozoE = (string) stream_get_contents($pipes[2]);
+        $out .= $trozoO;
+        $err .= $trozoE;
+        // Con $onOutput quien llama ve la salida segun sale, sin esperar a que
+        // el comando termine. Lo necesitan los trabajos largos: un apt de tres
+        // minutos sin una sola linea en pantalla parece colgado.
+        if ($onOutput !== null && ($trozoO !== '' || $trozoE !== '')) {
+            $onOutput($trozoO . $trozoE);
+        }
 
         $st = proc_get_status($proc);
         if (!$st['running']) {
@@ -56,8 +80,16 @@ function run(array $cmd, int $timeout = 15, ?string $stdin = null): array
         usleep(20000);
     }
 
-    $out .= stream_get_contents($pipes[1]);
-    $err .= stream_get_contents($pipes[2]);
+    // Lo que quedara en las tuberias al terminar el proceso. Tambien va al
+    // callback: si no, quien sigue la salida en vivo se pierde justo el final,
+    // que suele ser la linea que dice como ha ido.
+    $trozoO = (string) stream_get_contents($pipes[1]);
+    $trozoE = (string) stream_get_contents($pipes[2]);
+    $out .= $trozoO;
+    $err .= $trozoE;
+    if ($onOutput !== null && ($trozoO !== '' || $trozoE !== '')) {
+        $onOutput($trozoO . $trozoE);
+    }
     fclose($pipes[1]);
     fclose($pipes[2]);
     $code = proc_close($proc);

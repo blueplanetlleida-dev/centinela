@@ -352,6 +352,9 @@ if [[ "$UPGRADE" == "yes" ]]; then
     # a esa funcion; la creamos con los mismos permisos que el resto.
     install -d -m 2770 -o "$(stat -c '%U' "$DOCROOT")" -g "$GROUP" "$STATE_DIR/queue"
     install -d -m 2770 -o "$(stat -c '%U' "$DOCROOT")" -g "$GROUP" "$STATE_DIR/queue/actions"
+    # Progreso de las correcciones largas. Al reves que la cola: lo escribe root
+    # y la web solo lee, asi que no lleva setgid ni permiso de escritura.
+    install -d -m 0750 -o root -g "$GROUP" "$STATE_DIR/jobs"
   else
     warn "No se pudo determinar el docroot; copia web/ manualmente"
   fi
@@ -608,6 +611,9 @@ install -d -m 2770 -o "$WEBUSER" -g "$GROUP" "$STATE_DIR/queue"
 # Y dentro, las acciones sobre IPs: van a su propio directorio porque systemd
 # lo vigila con DirectoryNotEmpty.
 install -d -m 2770 -o "$WEBUSER" -g "$GROUP" "$STATE_DIR/queue/actions"
+# Progreso de las correcciones largas. Al reves que la cola: lo escribe root y
+# la web solo lee, asi que no lleva setgid ni permiso de escritura para el web.
+install -d -m 0750 -o root -g "$GROUP" "$STATE_DIR/jobs"
 # La clave de firma del captcha la lee la web pero no puede crearla ahi:
 # la generamos nosotros con permisos de solo lectura para el grupo.
 if [[ ! -f "$STATE_DIR/captcha.key" ]]; then

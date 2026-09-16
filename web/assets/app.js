@@ -344,7 +344,13 @@
     var desc  = btn.getAttribute('data-desc') || '';
     var label = (btn.textContent || 'Aplicar').trim();
 
-    if (!window.confirm(label + '\n\n' + desc + '\n\n¿Aplicarlo ahora?')) return;
+    var aviso = btn.getAttribute('data-warn') || '';
+    var largo = btn.getAttribute('data-long') === '1';
+
+    if (!window.confirm(label + '\n\n' + desc +
+        (aviso ? '\n\nATENCION: ' + aviso : '') +
+        (largo ? '\n\nPuede tardar varios minutos. Deja esta pagina abierta.' : '') +
+        '\n\n¿Aplicarlo ahora?')) return;
 
     var v = verdictBox(card);
     busy = true;
@@ -383,6 +389,14 @@
                 escapeHtml(r.detail || 'el ejecutor rechazo la correccion.'));
               return;
             }
+
+            // Correccion larga: el ejecutor solo la ha puesto en marcha. A
+            // partir de aqui lo que se sondea es el trabajo, no la accion.
+            if (r.job) {
+              seguirTrabajo(r.job, v, id, desde);
+              return;
+            }
+
             setState(v, 'working', '<span class="spinner" aria-hidden="true"></span> ' +
               escapeHtml(r.detail || 'Aplicada') +
               '. Volviendo a medir el servidor para confirmarlo…');
@@ -416,6 +430,87 @@
           });
       })
       .catch(function () { finish(v, 'fail', 'Fallo de red al pedir la correccion.'); });
+  }
+
+  /* ------------------------------------------ seguimiento de un trabajo largo -- */
+  /* Un apt puede tardar minutos, asi que no vale el sondeo corto de las acciones.
+     Se pregunta por el trabajo cada dos segundos y se enseNa por que paso va y
+     las ultimas lineas de salida, para que se note que aquello sigue vivo. */
+
+  var JOB_WAIT_MS = 1800000;   // media hora: apt sobre una cola larga tarda
+
+  function pintarTrabajo(v, j) {
+    var cab = '<span class="spinner" aria-hidden="true"></span> ' +
+      escapeHtml(j.label || 'Aplicando') +
+      (j.steps_total ? ' · paso ' + j.step + ' de ' + j.steps_total : '') +
+      (j.step_label ? ' · <code>' + escapeHtml(j.step_label) + '</code>' : '');
+    var log = (j.log || []).slice(-8).map(escapeHtml).join('\n');
+    setState(v, 'working', cab + (log ? '<pre class="joblog">' + log + '</pre>' : ''));
+  }
+
+  function seguirTrabajo(jobId, v, findingId, desde) {
+    var limite = Date.now() + JOB_WAIT_MS;
+
+    (function sondear() {
+      fetch('api.php?v=job&id=' + encodeURIComponent(jobId),
+            { credentials: 'same-origin', cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          if (!j) {
+            finish(v, 'fail', 'No se ha podido leer el progreso del trabajo.');
+            return;
+          }
+          if (j.status === 'pending' || j.status === 'running') {
+            pintarTrabajo(v, j);
+            if (Date.now() > limite) {
+              finish(v, 'persists', '<strong>Sigue en marcha</strong> y ya lleva mucho rato. ' +
+                'Miralo con <code>journalctl -u centinela-job</code>.');
+              return;
+            }
+            setTimeout(sondear, 2000);
+            return;
+          }
+          if (j.status !== 'ok') {
+            finish(v, 'fail', '<strong>No ha terminado bien.</strong> ' + escapeHtml(j.detail || '') +
+              ((j.log || []).length ? '<pre class="joblog">' +
+                (j.log || []).slice(-10).map(escapeHtml).join('\n') + '</pre>' : ''));
+            return;
+          }
+
+          // Termino bien: ahora la pregunta es si la incidencia ha desaparecido.
+          setState(v, 'working', '<span class="spinner" aria-hidden="true"></span> ' +
+            escapeHtml(j.detail || 'Terminado') + '. Volviendo a medir el servidor…');
+
+          waitForFreshState(desde, Date.now() + WAIT_MS,
+            function () {
+              findingStillThere(findingId).then(function (still) {
+                var reinicio = j.reboot_required
+                  ? ' <strong>Queda pendiente reiniciar la maquina</strong> para que el cambio surta efecto del todo.'
+                  : '';
+                if (still === false) {
+                  finish(v, 'solved', '<strong>Resuelta.</strong> ' + escapeHtml(j.detail || '') +
+                    ', y la incidencia ya no aparece.' + reinicio +
+                    ' El panel se actualiza en un momento.');
+                  setTimeout(function () { location.reload(); }, 4000);
+                } else if (still === null) {
+                  finish(v, 'fail', 'El trabajo termino bien pero no se ha podido leer la lista de incidencias.');
+                } else {
+                  finish(v, 'persists', '<strong>Terminado, pero sigue presente.</strong> ' +
+                    escapeHtml(still.detail || '') + reinicio +
+                    ' <button type="button" class="linkish" data-reload="1">Actualizar el panel</button>');
+                }
+              });
+            },
+            function () {
+              finish(v, 'persists', '<strong>Terminado,</strong> pero la recogida posterior no ha llegado a ' +
+                'tiempo. Pulsa «Volver a comprobar» dentro de un momento.');
+            });
+        })
+        .catch(function () {
+          if (Date.now() > limite) { finish(v, 'fail', 'Se perdio el contacto con el trabajo.'); return; }
+          setTimeout(sondear, 3000);
+        });
+    })();
   }
 
   function actionFailed(cell, msg) {

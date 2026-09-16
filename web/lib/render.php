@@ -295,9 +295,15 @@ function ui_finding(array $f): string
     // puede conocer los comandos que hay detras.
     $af = (array) ($f['autofix'] ?? []);
     if (!empty($af['key'])) {
-        $out .= '<button type="button" class="autofix" data-fid="' . h($id) . '"'
+        $out .= '<button type="button" class="autofix' . (!empty($af['long']) ? ' long' : '') . '"'
+            . ' data-fid="' . h($id) . '"'
             . ' data-fix="' . h((string) $af['key']) . '"'
-            . ' data-desc="' . h((string) ($af['desc'] ?? '')) . '">'
+            . ' data-desc="' . h((string) ($af['desc'] ?? '')) . '"'
+            // 'warn' solo lo llevan las que pueden cortar un servicio; el aviso
+            // se enseNa en la confirmacion, antes de que sea tarde.
+            . (!empty($af['warn']) ? ' data-warn="' . h((string) $af['warn']) . '"' : '')
+            . (!empty($af['long']) ? ' data-long="1"' : '')
+            . '>'
             . '<span aria-hidden="true">✦</span> ' . h((string) $af['label']) . '</button>';
     }
     $out .= '</div>';

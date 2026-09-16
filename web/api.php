@@ -189,6 +189,16 @@ switch ((string) ($_GET['v'] ?? 'all')) {
         }
         json_out(['done' => false]);
 
+    // Progreso de una correccion larga: lo que sondea el panel mientras apt
+    // trabaja. Se devuelve solo la cola del registro; el resto ya se ha visto.
+    case 'job':
+        $job = read_job((string) ($_GET['id'] ?? ''));
+        if ($job === null) {
+            json_out(['error' => 'no hay ningun trabajo con ese identificador'], 404);
+        }
+        $job['log'] = array_slice((array) ($job['log'] ?? []), -40);
+        json_out($job);
+
     case 'health':
         json_out($st['health'] ?? []);
 

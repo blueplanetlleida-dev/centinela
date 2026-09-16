@@ -237,6 +237,70 @@ foreach ($files as $file) {
             continue;
         }
 
+        // ----------------------------------------------- correccion larga ---
+        // No se ejecuta aqui: se abre un trabajo y se lanza en una unidad
+        // transitoria, que vive fuera del TimeoutStartSec de este servicio. El
+        // panel deja de sondear el resultado y pasa a sondear el trabajo.
+        if (!empty($def['long'])) {
+            $job = [
+                'id'          => $res['id'],
+                'fix'         => $res['fix'],
+                'label'       => (string) $def['label'],
+                'user'        => $res['user'],
+                'origin'      => $res['origin'],
+                'started'     => time(),
+                'finished'    => null,
+                'status'      => 'pending',
+                'step'        => 0,
+                'steps_total' => 0,
+                'log'         => [],
+                'detail'      => '',
+            ];
+            if (!job_write($stateDir, $job, $group)) {
+                $res['detail'] = 'no se pudo abrir el trabajo; revisa los permisos de jobs/';
+                record($stateDir, $group, $res, $quiet);
+                continue;
+            }
+
+            // PHP_BINARY es el interprete con el que corre este proceso, que es
+            // el que el instalador dejo en la unidad: asi el trabajo usa el
+            // mismo y no hay que adivinarlo.
+            $lanzar = [
+                '/usr/bin/systemd-run',
+                '--collect',
+                '--unit=' . CENT_JOB_UNIT,
+                '--description=Centinela - ' . $def['label'],
+                PHP_BINARY, $base . '/bin/centinela-job',
+                '--id', $res['id'],
+                '--state', $stateDir,
+            ];
+            if ($group !== null) {
+                array_push($lanzar, '--group', $group);
+            }
+
+            $r = run($lanzar, 20);
+            if (!$r['ok']) {
+                // El caso habitual: ya hay una unidad con ese nombre, es decir,
+                // otra correccion larga en marcha. No se solapan a proposito:
+                // dos apt a la vez chocarian por el cerrojo de dpkg.
+                $job['status']   = 'error';
+                $job['detail']   = 'no se pudo lanzar: ya hay otra correccion larga en marcha';
+                $job['finished'] = time();
+                job_write($stateDir, $job, $group);
+
+                $res['detail'] = $job['detail'];
+                record($stateDir, $group, $res, $quiet);
+                continue;
+            }
+
+            $res['ok']     = true;
+            $res['job']    = $res['id'];
+            $res['detail'] = 'en marcha';
+            record($stateDir, $group, $res, $quiet);
+            // Sin $hechas++: la recogida la pedira el propio trabajo al acabar.
+            continue;
+        }
+
         $timeout = max(5, (int) ($def['timeout'] ?? 30));
         $pasos   = ($def['steps'])();
         $salida  = [];
