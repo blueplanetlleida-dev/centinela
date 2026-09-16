@@ -529,7 +529,9 @@ function collect_security_products(): array
     // Antivirus Sophos
     $sophos = ['installed' => isset($ext['sophos-av']) || is_dir('/opt/sophos-av')];
     if ($sophos['installed']) {
-        $sophos['active'] = trim(sh("systemctl is-active sav-protect 2>/dev/null || systemctl is-active plesk-sophos-av 2>/dev/null")) === 'active';
+        // is-active imprime una linea por unidad y sale !=0 si alguna no corre, asi que
+        // no vale comparar la salida entera: basta con que una de las dos diga "active".
+        $sophos['active'] = (bool) preg_match('/^active$/m', sh("systemctl is-active sav-protect plesk-sophos-av 2>/dev/null"));
         if (!$sophos['active']) {
             $findings[] = finding('sec.sophos', SEV_INFO, 'Sophos Anti-Virus instalado pero inactivo',
                 'El paquete esta presente y recibe actualizaciones, pero el servicio no corre',
