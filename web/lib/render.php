@@ -286,8 +286,21 @@ function ui_finding(array $f): string
         . '</span> <span class="what">' . h($f['title']) . '</span>'
         // El boton no comprueba nada por si mismo: pide al colector que
         // vuelva a medir y luego mira si este hallazgo sigue en la lista.
-        . '<button type="button" class="recheck" data-fid="' . h($id) . '">Volver a comprobar</button>'
-        . '</div>';
+        . '<button type="button" class="recheck" data-fid="' . h($id) . '">Volver a comprobar</button>';
+
+    // Boton de arreglo, solo si la recogida marco este hallazgo con una
+    // correccion del catalogo. Igual que el de bloquear una IP, no ejecuta
+    // nada: encola la peticion y espera al ejecutor privilegiado. La clave va
+    // en el atributo porque es lo unico que viaja; el navegador no conoce ni
+    // puede conocer los comandos que hay detras.
+    $af = (array) ($f['autofix'] ?? []);
+    if (!empty($af['key'])) {
+        $out .= '<button type="button" class="autofix" data-fid="' . h($id) . '"'
+            . ' data-fix="' . h((string) $af['key']) . '"'
+            . ' data-desc="' . h((string) ($af['desc'] ?? '')) . '">'
+            . '<span aria-hidden="true">✦</span> ' . h((string) $af['label']) . '</button>';
+    }
+    $out .= '</div>';
     if (!empty($f['detail'])) {
         $out .= '<div class="detail">' . h($f['detail']) . '</div>';
     }

@@ -3,6 +3,10 @@
 /**
  * Centinela - ejecutor de acciones pedidas desde el panel.
  *
+ * Atiende dos familias de peticion: bloquear o desbloquear una IP en fail2ban,
+ * y aplicar una correccion del catalogo de lib/fixes.php. Comparten cola,
+ * validacion y registro de auditoria; lo que cambia es que se valida.
+ *
  * Corre como root, disparado por centinela-action.path cuando la web deja una
  * peticion en el directorio de cola. La web nunca ejecuta nada privilegiado:
  * solo escribe un fichero, y aqui se decide si esa peticion es admisible.
@@ -19,6 +23,7 @@ $base = dirname(__DIR__);
 require $base . '/lib/util.php';
 require $base . '/lib/config.php';
 require $base . '/lib/platform.php';
+require $base . '/lib/fixes.php';
 
 $opts = getopt('', ['state:', 'group:', 'quiet', 'help']);
 if (isset($opts['help'])) {
@@ -134,7 +139,7 @@ function record(string $stateDir, ?string $group, array $res, bool $quiet): void
         date('c'),
         $res['action'],
         $res['ip'],
-        $res['jail'] ?? '-',
+        $res['jail'] ?? $res['fix'] ?? '-',
         $res['ok'] ? 'ok' : 'error',
         str_replace(["\t", "\n", "\r"], ' ', (string) ($res['user'] ?? '-')),
         str_replace(["\t", "\n", "\r"], ' ', (string) ($res['detail'] ?? ''))
@@ -193,13 +198,14 @@ foreach ($files as $file) {
         'action' => (string) ($req['action'] ?? ''),
         'ip'     => (string) ($req['ip'] ?? ''),
         'jail'   => null,
+        'fix'    => null,
         'user'   => substr((string) ($req['user'] ?? ''), 0, 64),
         'origin' => substr((string) ($req['origin'] ?? ''), 0, 45),
         'ok'     => false,
         'detail' => '',
     ];
 
-    if (!in_array($res['action'], ['ban', 'unban'], true)) {
+    if (!in_array($res['action'], ['ban', 'unban', 'fix'], true)) {
         $res['detail'] = 'accion no reconocida';
         record($stateDir, $group, $res, $quiet);
         continue;
@@ -209,6 +215,92 @@ foreach ($files as $file) {
         record($stateDir, $group, $res, $quiet);
         continue;
     }
+
+    // ------------------------------------------ correcciones del catalogo ---
+    // Van antes de validar la IP porque no llevan ninguna: lo que identifica a
+    // una correccion es su clave, y la clave solo vale si esta en el catalogo.
+    if ($res['action'] === 'fix') {
+        $res['ip']  = '-';
+        $res['fix'] = (string) preg_replace('/[^a-z0-9._-]/', '', strtolower((string) ($req['fix'] ?? '')));
+
+        $def = $res['fix'] !== '' ? fix_get($res['fix']) : null;
+        if ($def === null) {
+            // Aqui muere cualquier cosa que la web se haya inventado: si la
+            // clave no esta en el catalogo, no hay nada que ejecutar.
+            $res['detail'] = 'correccion no reconocida';
+            record($stateDir, $group, $res, $quiet);
+            continue;
+        }
+        if (isset($def['available']) && !($def['available'])()) {
+            $res['detail'] = 'esta correccion no es aplicable en este servidor';
+            record($stateDir, $group, $res, $quiet);
+            continue;
+        }
+
+        $timeout = max(5, (int) ($def['timeout'] ?? 30));
+        $pasos   = ($def['steps'])();
+        $salida  = [];
+        $fallo   = null;
+
+        foreach ($pasos as $cmd) {
+            if (!is_array($cmd) || !fix_argv_ok($cmd)) {
+                // El catalogo arma algunos pasos sobre la marcha (nombres de
+                // unidad, ruta de plesk). Si sale algo que no se puede
+                // ejecutar, se para antes de dejar el arreglo a medias.
+                $fallo = 'el catalogo produjo un comando que no se puede ejecutar';
+                break;
+            }
+            $r = run($cmd, $timeout);
+            $txt = trim($r['err'] ?: $r['out']);
+            if ($txt !== '') {
+                $salida[] = $txt;
+            }
+            if (!$r['ok']) {
+                // Con el nombre del comando delante: la salida suelta ("inactive",
+                // "1") no le dice nada a quien lee esto desde el panel.
+                $fallo = 'fallo en «' . basename($cmd[0]) . '»'
+                       . ($txt !== '' ? ': ' . $txt : ' (sin mensaje)');
+                break;
+            }
+        }
+
+        if ($fallo !== null) {
+            $res['detail'] = $fallo;
+            record($stateDir, $group, $res, $quiet);
+            continue;
+        }
+
+        // Comprobacion inmediata. La prueba definitiva la da la recogida que se
+        // pide al final, que vuelve a medir el servidor entero; esto es solo
+        // para poder responder ya mismo sin esperarla.
+        $res['ok']     = true;
+        $res['detail'] = 'aplicada';
+        if (isset($def['check'])) {
+            $chk = ($def['check'])();
+            if (is_array($chk) && fix_argv_ok($chk)) {
+                $out = run($chk, $timeout)['out'];
+                $esperado = (string) ($def['expect'] ?? '');
+                if ($esperado !== '' && !preg_match($esperado, $out)) {
+                    // El comando no protesto pero el servidor no ha quedado
+                    // como deberia. Decirlo es mas util que cantar victoria.
+                    $res['ok']     = false;
+                    $res['detail'] = 'se aplico, pero la comprobacion posterior no da por bueno el resultado';
+                } else {
+                    $res['detail'] = 'aplicada y comprobada';
+                }
+            }
+        }
+        if ($salida) {
+            $res['detail'] .= ': ' . substr(implode('; ', $salida), 0, 300);
+        }
+
+        record($stateDir, $group, $res, $quiet);
+        if ($res['ok']) {
+            $hechas++;
+        }
+        continue;
+    }
+
     if (!filter_var($res['ip'], FILTER_VALIDATE_IP)) {
         $res['detail'] = 'la direccion no es valida';
         record($stateDir, $group, $res, $quiet);

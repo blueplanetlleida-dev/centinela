@@ -343,6 +343,62 @@ refleje el cambio en segundos.
 La capa web, además, se niega a bloquear la IP desde la que estás conectado:
 es el error fácil de cometer, y la validación de verdad está en el ejecutor.
 
+### Aplicar una corrección desde la incidencia
+
+Las incidencias que tienen arreglo conocido llevan un botón junto a «Volver a
+comprobar». No hay un intérprete genérico detrás: cada corrección está escrita a
+mano en `lib/fixes.php` y el panel solo manda su **clave**.
+
+```
+  panel ──POST api.php {action:fix, fix:"f2b.reload"}──▶ queue/actions/<id>.json
+                                  │
+                                  ▼
+                        centinela-action  (root)
+                        fix_get('f2b.reload')  ──▶ null = no se ejecuta nada
+                                  │
+                        pasos (argv, sin shell) ──▶ comprobación ──▶ recogida
+```
+
+Por qué el catálogo es cerrado y no se ejecuta el `cmd` de la guía, que sería lo
+inmediato: esos comandos están escritos para que los lea una persona. Muchos
+llevan marcadores como `NOMBRE`, `DOMINIO` o `RANGO` que uno sustituye al
+copiarlos; ejecutarlos tal cual haría cosas absurdas. Otros son de diagnóstico,
+no de arreglo. Y alguno sería activamente dañino: vaciar la cola de correo no
+ayuda si la causa resulta ser una cuenta comprometida enviando spam.
+
+Qué entra en el catálogo: solo lo **idempotente, rápido y sin corte de
+servicio**. Aplicarlo dos veces no hace daño, termina en segundos y no deja una
+web ni un buzón sin responder.
+
+| Clave | Resuelve | Qué hace |
+|---|---|---|
+| `f2b.start` | `f2b.down` | Habilita y arranca fail2ban |
+| `f2b.reload` | `f2b.nojails` | Valida la configuración y recarga los jails |
+| `sophos.start` | `sec.sophos` | Arranca el antivirus y el temporizador de firmas |
+| `plesk.autoupdates` | `plesk.updater` | Activa el actualizador del panel |
+
+Qué se ha dejado fuera **a propósito**:
+
+- Lo que tarda minutos (`apt-get upgrade`): el ejecutor tiene un TTL de 5
+  minutos y la unidad un `TimeoutStartSec`. Necesita un modelo de trabajo largo
+  con estado y sondeo, que es otra cosa.
+- Lo que borra datos (`journalctl --vacuum-time`): libera disco, pero se lleva
+  registros que quizá hagan falta para investigar.
+- Lo que puede dejarte fuera del servidor (`PasswordAuthentication no`). Ese no
+  debería tener botón nunca, ni con confirmación.
+- El reinicio, que se lleva por delante el propio panel.
+
+Cada corrección declara además un comando de **comprobación**. Se ejecuta justo
+después, y si no cuadra el panel lo dice en vez de cantar victoria. La prueba
+definitiva llega enseguida: al terminar se encola una recogida completa y el
+panel espera a verla para confirmar que la incidencia ha desaparecido. Por eso
+el veredicto distingue tres finales: *resuelta*, *aplicada pero sigue presente*
+y *no se ha podido aplicar*.
+
+Añadir una corrección nueva es una entrada en `fix_catalog()`, nada más. El
+campo `available` sirve para no ofrecer el botón donde no aplica: el antivirus
+de Plesk es `plesk-sophos-av` en unas instalaciones y `sav-protect` en otras.
+
 ### Cruce con fail2ban
 
 El análisis del log dice quién ataca; fail2ban dice a quién retiene. Ninguna

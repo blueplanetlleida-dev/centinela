@@ -246,7 +246,7 @@
 
   function finish(v, cls, html) {
     setState(v, cls, html);
-    document.querySelectorAll('.recheck').forEach(function (b) { b.disabled = false; });
+    document.querySelectorAll('.recheck, .autofix').forEach(function (b) { b.disabled = false; });
     // El refresco automatico vuelve a la carga pasado un rato, para que el
     // veredicto se pueda leer con calma.
     setTimeout(function () { busy = false; }, 120000);
@@ -331,6 +331,93 @@
       .catch(function () { actionFailed(cell, 'fallo de red'); });
   }
 
+  /* ------------------------------------- aplicar una correccion del catalogo -- */
+  /* Mismo reparto que en todo lo demas: el navegador manda una clave, nunca un
+     comando, y el ejecutor privilegiado decide. Lo que se aNade aqui es el
+     segundo tiempo: cuando el arreglo se aplica, el ejecutor pide una recogida
+     completa, y en vez de dar por buena la respuesta se espera a esa recogida
+     para comprobar que la incidencia ha desaparecido de verdad. */
+
+  function autofix(card, btn) {
+    var id    = btn.getAttribute('data-fid');
+    var clave = btn.getAttribute('data-fix');
+    var desc  = btn.getAttribute('data-desc') || '';
+    var label = (btn.textContent || 'Aplicar').trim();
+
+    if (!window.confirm(label + '\n\n' + desc + '\n\n¿Aplicarlo ahora?')) return;
+
+    var v = verdictBox(card);
+    busy = true;
+    document.querySelectorAll('.recheck, .autofix').forEach(function (b) { b.disabled = true; });
+    setState(v, 'working', '<span class="spinner" aria-hidden="true"></span> Aplicando la correccion…');
+
+    var body = new URLSearchParams();
+    body.set('action', 'fix');
+    body.set('fix', clave);
+    body.set('csrf', csrf);
+
+    fetch('api.php', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    })
+      .then(function (r) {
+        if (r.status === 401) { location.href = 'login.php'; return null; }
+        return r.json().then(function (d) { return { ok: r.ok, d: d }; });
+      })
+      .then(function (res) {
+        if (!res) return;
+        if (!res.ok || !res.d.queued) {
+          finish(v, 'fail', '<strong>No se ha podido encolar.</strong> ' +
+            escapeHtml(res.d.error || 'respuesta inesperada del servidor.'));
+          return;
+        }
+        var desde = res.d.since || 0;
+
+        actionResult(res.d.id, Date.now() + ACT_WAIT_MS,
+          function (r) {
+            if (!r.ok) {
+              finish(v, 'fail', '<strong>No se ha podido aplicar.</strong> ' +
+                escapeHtml(r.detail || 'el ejecutor rechazo la correccion.'));
+              return;
+            }
+            setState(v, 'working', '<span class="spinner" aria-hidden="true"></span> ' +
+              escapeHtml(r.detail || 'Aplicada') +
+              '. Volviendo a medir el servidor para confirmarlo…');
+
+            waitForFreshState(desde, Date.now() + WAIT_MS,
+              function () {
+                findingStillThere(id).then(function (still) {
+                  if (still === null) {
+                    finish(v, 'fail', 'Se aplico la correccion pero no se ha podido leer la lista de incidencias.');
+                  } else if (still === false) {
+                    finish(v, 'solved', '<strong>Resuelta.</strong> ' + escapeHtml(r.detail || '') +
+                      ', y la incidencia ya no aparece en la nueva recogida. El panel se actualiza en un momento.');
+                    setTimeout(function () { location.reload(); }, 3500);
+                  } else {
+                    // Caso incomodo pero el mas util de contar bien: el comando
+                    // no protesto y aun asi el problema sigue ahi.
+                    finish(v, 'persists', '<strong>Aplicada, pero sigue presente.</strong> ' +
+                      escapeHtml(still.detail || '') +
+                      ' <button type="button" class="linkish" data-reload="1">Actualizar el panel</button>');
+                  }
+                });
+              },
+              function () {
+                finish(v, 'persists', '<strong>Aplicada,</strong> pero la recogida posterior no ha llegado a tiempo. ' +
+                  'Pulsa «Volver a comprobar» dentro de un momento.');
+              });
+          },
+          function () {
+            finish(v, 'fail', '<strong>Sin respuesta del ejecutor.</strong> La peticion quedo encolada; ' +
+              'comprueba <code>systemctl status centinela-action.path</code>.');
+          });
+      })
+      .catch(function () { finish(v, 'fail', 'Fallo de red al pedir la correccion.'); });
+  }
+
   function actionFailed(cell, msg) {
     cell.innerHTML = '<span class="tag crit"><span aria-hidden="true">×</span> Error</span> ' +
       '<span class="muted">' + escapeHtml(msg) + '</span>';
@@ -340,6 +427,8 @@
   document.addEventListener('click', function (e) {
     var b = e.target.closest('.recheck');
     if (b && !b.disabled) { recheck(b.closest('.finding'), b); return; }
+    var fx = e.target.closest('.autofix');
+    if (fx && !fx.disabled) { autofix(fx.closest('.finding'), fx); return; }
     var a = e.target.closest('.ipact');
     if (a && !a.disabled) { a.disabled = true; ipAction(a); return; }
     if (e.target.closest('[data-reload]')) location.reload();

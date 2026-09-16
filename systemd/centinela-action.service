@@ -7,7 +7,9 @@ After=fail2ban.service
 Type=oneshot
 ExecStart=__PHP__ __PREFIX__/bin/centinela-action --quiet --state __STATE__ --group __GROUP__
 Nice=0
-TimeoutStartSec=120
+# Las correcciones del catalogo encadenan varios comandos con su propio
+# timeout; 120 s se quedaban cortos en cuanto hay mas de un paso.
+TimeoutStartSec=300
 
 # Necesita root para hablar con el socket de fail2ban, pero nada mas.
 NoNewPrivileges=yes

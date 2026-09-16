@@ -15,6 +15,7 @@ require $base . '/lib/util.php';
 require $base . '/lib/config.php';
 require $base . '/lib/platform.php';
 require $base . '/lib/score.php';
+require $base . '/lib/fixes.php';
 require $base . '/lib/collect_system.php';
 require $base . '/lib/collect_plesk.php';
 require $base . '/lib/collect_security.php';
@@ -126,6 +127,10 @@ module('guard',     'collect_guard',             $report, $all, $quiet);
 // (log de autenticacion) y a quien retiene fail2ban. Se hace aqui, cuando ya
 // estan todos recogidos, y antes de calcular la nota para que cuente.
 cross_reference_bans($report, $all);
+
+// Cada hallazgo que tenga una correccion aplicable desde el panel se marca
+// aqui, en un solo sitio, en vez de que lo haga cada modulo por su cuenta.
+$all = fixes_annotate($all);
 
 // Los hallazgos ya viven dentro de cada modulo; en la raiz dejamos el resumen
 $report['health']       = compute_score($all);
