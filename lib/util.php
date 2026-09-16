@@ -8,7 +8,7 @@
 
 declare(strict_types=1);
 
-const CENT_VERSION = '1.1.2';
+const CENT_VERSION = '1.1.3';
 
 /**
  * Ejecuta un comando sin shell. Todos los argumentos van en array, asi que

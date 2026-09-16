@@ -11,7 +11,7 @@
 #
 set -euo pipefail
 
-VERSION="1.1.2"
+VERSION="1.1.3"
 PREFIX="/usr/local/centinela"
 STATE_DIR="/var/lib/centinela"
 CONFIG_DIR="/etc/centinela"
@@ -32,6 +32,7 @@ SKIP_DNS_CHECK="no"
 ASSUME_YES="no"
 UNINSTALL="no"
 UPGRADE="no"
+FORCE_GENERIC="no"   # instalar sin panel aunque haya panel; ver el aviso mas abajo
 PLATFORM=""          # plesk | hestia | generic (vacio = detectar)
 HESTIA_USER="admin"  # usuario de Hestia que aloja el panel
 WEBSERVER=""         # sin panel: nginx | apache (vacio = detectar)
@@ -146,6 +147,9 @@ Obligatorio:
 
 Opciones:
   --platform TIPO       plesk | hestia | generic (por defecto se detecta)
+  --force-generic       Instalar sin panel AUNQUE haya un panel instalado.
+                        Peligroso: la instalacion sin panel escribe en
+                        /etc/nginx, que en Plesk o Hestia gestiona el panel.
   --hestia-user USUARIO Usuario de Hestia que alojara el panel (por defecto: ${HESTIA_USER})
   --webserver TIPO      Sin panel: nginx | apache (por defecto se detecta)
   --interval TIEMPO     Frecuencia de recogida (por defecto: ${INTERVAL})
@@ -182,6 +186,7 @@ while [[ $# -gt 0 ]]; do
     --skip-dns-check) SKIP_DNS_CHECK="yes"; shift ;;
     --prefix)         PREFIX="${2:-}"; shift 2 ;;
     -y|--yes)         ASSUME_YES="yes"; shift ;;
+    --force-generic)  FORCE_GENERIC="yes"; shift ;;
     --upgrade)        UPGRADE="yes"; shift ;;
     --uninstall)      UNINSTALL="yes"; shift ;;
     -h|--help)        usage; exit 0 ;;
@@ -240,6 +245,26 @@ if [[ -z "$PLATFORM" ]]; then
   elif [[ -x /usr/local/hestia/bin/v-list-users ]]; then PLATFORM="hestia"
   else PLATFORM="generic"; fi
 fi
+
+# Panel presente en la maquina, lo hayamos elegido o no. Se mira aparte de
+# PLATFORM porque lo que importa aqui no es que hemos decidido usar, sino quien
+# manda de verdad en /etc/nginx.
+PANEL_PRESENTE=""
+[[ -n "$PLESK_BIN" ]] && PANEL_PRESENTE="Plesk"
+[[ -x /usr/local/hestia/bin/v-list-users ]] && PANEL_PRESENTE="HestiaCP"
+
+# Instalar «sin panel» en una maquina que si tiene panel es la via rapida a
+# romperle el servidor web a alguien: la rama generic escribe en
+# /etc/nginx/conf.d, que Plesk incluye y gestiona, y ademas el mensaje de
+# «instala nginx» llevaria a «apt-get install nginx», que en Plesk desinstala
+# sw-nginx y se lleva por delante componentes del panel.
+if [[ "$PLATFORM" == "generic" && -n "$PANEL_PRESENTE" && "$FORCE_GENERIC" != "yes" && "$UPGRADE" != "yes" ]]; then
+  die "Se ha pedido --platform generic pero esta maquina tiene ${PANEL_PRESENTE}.
+     Sin --platform, Centinela se instala dentro del panel, que es lo que quieres.
+     La instalacion «sin panel» escribe en /etc/nginx, que aqui gestiona ${PANEL_PRESENTE},
+     y puede dejar el servidor web inservible.
+     Si de verdad sabes lo que haces, repite con --force-generic."
+fi
 case "$PLATFORM" in
   plesk)
     [[ -n "$PLESK_BIN" ]] || die "Se pidio --platform plesk pero no se ha encontrado Plesk."
@@ -250,7 +275,13 @@ case "$PLATFORM" in
     HESTIA_VER="$(awk -F"'" '/^VERSION=/{print $2}' /usr/local/hestia/conf/hestia.conf 2>/dev/null || true)"
     ok "Plataforma: HestiaCP ${HESTIA_VER:-desconocida}" ;;
   generic)
-    ok "Plataforma: Linux sin panel" ;;
+    if [[ -n "$PANEL_PRESENTE" ]]; then
+      # Decir «sin panel» cuando hay panel es justo lo que no conviene leer
+      # antes de una instalacion que va a escribir en /etc/nginx.
+      warn "Plataforma: sin panel POR PETICION EXPRESA, aunque hay ${PANEL_PRESENTE} instalado"
+    else
+      ok "Plataforma: Linux sin panel"
+    fi ;;
   *) die "Plataforma desconocida: ${PLATFORM} (plesk, hestia o generic)" ;;
 esac
 
@@ -276,7 +307,15 @@ if [[ -z "$PHP_BIN" ]]; then
     if [[ -x "/usr/bin/php${v}" ]]; then PHP_BIN="/usr/bin/php${v}"; break; fi
   done
 fi
-[[ -n "$PHP_BIN" ]] || die "No se ha encontrado ningun interprete PHP. Instala php-cli y php-fpm (apt-get install php-cli php-fpm | dnf install php-cli php-fpm)."
+if [[ -z "$PHP_BIN" ]]; then
+  # Mismo cuidado que con el servidor web: en una maquina con panel, mandar a
+  # alguien a «apt-get install php-cli php-fpm» le mete un PHP de distribucion
+  # al lado del del panel. Aqui el PHP que hay que usar es el del panel.
+  [[ -n "$PANEL_PRESENTE" ]] && die "No se ha encontrado ningun interprete PHP utilizable, y esta maquina tiene ${PANEL_PRESENTE}.
+     No instales php con apt aqui: usa el del panel. En Plesk esta en /opt/plesk/php/<version>/bin/php.
+     Lo normal es que esto salga por haber forzado --platform generic; quitalo y deja que se detecte el panel."
+  die "No se ha encontrado ningun interprete PHP. Instala php-cli y php-fpm (apt-get install php-cli php-fpm | dnf install php-cli php-fpm)."
+fi
 PHP_VER="$($PHP_BIN -r 'echo PHP_VERSION;')"
 PHP_MM="${PHP_VER%.*}"
 [[ "$($PHP_BIN -r 'echo version_compare(PHP_VERSION,"8.1.0",">=") ? 1 : 0;')" == "1" ]] \
@@ -306,8 +345,17 @@ if [[ "$PLATFORM" == "generic" && "$UPGRADE" != "yes" ]]; then
     elif command -v apache2ctl >/dev/null 2>&1 || command -v httpd >/dev/null 2>&1; then WEBSERVER="apache"
     fi
   fi
-  [[ "$WEBSERVER" == "nginx" || "$WEBSERVER" == "apache" ]] \
-    || die "No hay nginx ni Apache. Instala uno (apt-get install nginx php${PHP_MM}-fpm) y repite."
+  # El consejo cambia segun la maquina, y no es un detalle de estilo: en un
+  # servidor con panel, «apt-get install nginx» desinstala el nginx del panel
+  # (en Plesk, sw-nginx) y se lleva componentes con el. Ahi no se sugiere jamas.
+  if [[ "$WEBSERVER" != "nginx" && "$WEBSERVER" != "apache" ]]; then
+    if [[ -n "$PANEL_PRESENTE" ]]; then
+      die "No se ha encontrado un servidor web en marcha, y esta maquina tiene ${PANEL_PRESENTE}.
+     NO instales nginx con apt aqui: reemplazaria al nginx de ${PANEL_PRESENTE} y romperia el panel.
+     Activa el servidor web desde ${PANEL_PRESENTE} y vuelve a lanzar esto sin --platform generic."
+    fi
+    die "No hay nginx ni Apache. Instala uno (apt-get install nginx php${PHP_MM}-fpm) y repite."
+  fi
   if [[ -x "/usr/sbin/php-fpm${PHP_MM}" && -d "/etc/php/${PHP_MM}/fpm/pool.d" ]]; then
     FPM_SVC="php${PHP_MM}-fpm"; FPM_POOL_DIR="/etc/php/${PHP_MM}/fpm/pool.d"; FPM_SOCK="/run/php/centinela.sock"
   elif [[ -x /usr/sbin/php-fpm && -d /etc/php-fpm.d ]]; then
@@ -510,6 +558,13 @@ POOL
   if [[ "$WEBSERVER" == "nginx" ]]; then
     if [[ -d /etc/nginx/sites-available ]]; then NGX_CONF=/etc/nginx/sites-available/centinela.conf
     else NGX_CONF=/etc/nginx/conf.d/centinela.conf; fi
+    # Aqui ya se ha pasado por --force-generic, asi que no se bloquea: pero si
+    # el nginx lo gestiona un panel, conviene decir en voz alta donde va a caer
+    # el fichero, porque el panel lo reescribe todo en cuanto reconfigura algo.
+    if [[ -d /etc/nginx/plesk.conf.d || -f /etc/nginx/conf.d/zz010_psa_nginx.conf ]]; then
+      warn "Este /etc/nginx lo gestiona Plesk. El fichero ${NGX_CONF} puede desaparecer"
+      warn "o dejar de aplicarse en cuanto Plesk regenere su configuracion."
+    fi
     cat > "$NGX_CONF" <<NGX
 # Generado por Centinela. Panel de seguridad en ${DOMAIN}.
 server {

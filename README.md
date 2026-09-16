@@ -173,6 +173,7 @@ servidor web a usar cuando conviven los dos.
 | `--weekly-day DÍA` | Día del informe: `Mon`…`Sun`, por defecto `Mon` |
 | `--weekly-hour HORA` | Hora del informe, por defecto `08` |
 | `--platform TIPO` | `plesk`, `hestia` o `generic`; por defecto se detecta |
+| `--force-generic` | Instalar sin panel **aunque haya panel**. Peligroso, ver abajo |
 | `--hestia-user USUARIO` | Usuario de Hestia que aloja el panel (por defecto `admin`) |
 | `--webserver TIPO` | Sin panel: `nginx` o `apache`; por defecto el que esté activo |
 | `--update-repo REPO` | Repositorio `usuario/centinela` del que actualizarse solo |
@@ -182,6 +183,28 @@ servidor web a usar cuando conviven los dos.
 | `-y`, `--yes` | Sin confirmación interactiva |
 | `--upgrade` | Actualiza el código conservando la configuración |
 | `--uninstall` | Desinstala (conserva configuración y datos) |
+
+### No fuerces `--platform generic` en un servidor con panel
+
+**Lo normal es no pasar `--platform`**: se detecta solo y hace lo correcto.
+
+La instalación «sin panel» crea su propio vhost escribiendo en
+`/etc/nginx/conf.d`, que en Plesk lo gestiona el panel. Peor aún: si en esa
+rama no encuentra servidor web o PHP, te manda a instalarlos con apt — y en un
+Plesk, `apt-get install nginx` **desinstala `sw-nginx`**, que es el nginx del
+panel, y se lleva componentes por delante. Es decir, el consejo correcto para
+un servidor pelado deja inservible uno con panel.
+
+Por eso el instalador ahora:
+
+1. **Se niega** a instalar en modo `generic` si detecta Plesk o HestiaCP, y
+   explica por qué. Sólo continúa si además se pasa `--force-generic`.
+2. **Nunca sugiere instalar nginx ni PHP con apt** cuando hay un panel: manda a
+   activarlos desde el panel, o a usar el PHP del panel.
+3. **Avisa en voz alta** si va a escribir en un `/etc/nginx` gestionado por
+   Plesk, porque el panel lo reescribirá en cuanto reconfigure algo.
+4. Al anunciar la plataforma dice *«sin panel por petición expresa, aunque hay
+   Plesk instalado»* en vez del engañoso *«Linux sin panel»*.
 
 ### Requisitos
 
