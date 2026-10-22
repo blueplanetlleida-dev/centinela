@@ -1,0 +1,19 @@
+INFORME SEMANAL DE CENTINELA
+Del {{ desde | dt }} al {{ now | dt }}
+
+{{ cuenta.total }} servidor(es): {{ cuenta.ok }} bien, {{ cuenta.warn }} con avisos, {{ cuenta.crit }} críticos, {{ cuenta.offline }} sin contacto
+
+SERVIDORES (CPU y memoria de media, disco y temperatura máximos)
+{% for h in hosts %}  {{ h.name }}: CPU {{ h.cpu | pct }}, memoria {{ h.mem | pct }}, disco {{ h.disk | pct }}{% if h.temp is not none %}, {{ h.temp | num(0) }} °C{% endif %}, informó el {{ h.avail | num(1) }} % del tiempo{% if h.crit or h.warn %}, {{ h.crit }} críticas y {{ h.warn }} avisos{% endif %}
+{% endfor %}
+PROBLEMAS ABIERTOS AHORA
+{% for a in abiertas %}  [{{ SEV.get(a.sev, SEV['info'])[0] | upper }}] {{ a.name }}: {{ a.title }} (desde {{ a.opened_at | ago(now) }})
+{% else %}  Ninguno.
+{% endfor %}
+LO QUE PASÓ DURANTE LA SEMANA
+{% for a in semana %}  [{{ SEV.get(a.sev, SEV['info'])[0] | upper }}] {{ a.name }}: {{ a.title }} ({{ a.opened_at | dt }}, {% if a.closed_at %}duró {{ (a.closed_at - a.opened_at) | duration }}{% else %}sigue abierto{% endif %})
+{% else %}  Una semana sin incidencias.
+{% endfor %}
+{% if url %}
+Panel: {{ url }}/
+{% endif %}

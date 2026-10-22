@@ -15,6 +15,8 @@ CONF="$CONF_DIR/central.conf"
 STATE=/var/lib/centinela-central
 SVC_USER=centinela-central
 UNIT=/etc/systemd/system/centinela-central.service
+UPD_SERVICE=/etc/systemd/system/centinela-central-update.service
+UPD_TIMER=/etc/systemd/system/centinela-central-update.timer
 LAUNCHER=/usr/local/sbin/centinela-central
 
 URL=""
@@ -86,9 +88,10 @@ print(c.execute("SELECT COUNT(*) FROM hosts").fetchone()[0])' "$STATE/central.db
         fi
     fi
     if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now centinela-central-update.timer 2>/dev/null || true
         systemctl disable --now centinela-central 2>/dev/null || true
     fi
-    rm -f "$UNIT" "$LAUNCHER"
+    rm -f "$UNIT" "$UPD_SERVICE" "$UPD_TIMER" "$LAUNCHER"
     rm -rf "$PREFIX"
     command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload 2>/dev/null || true
     if [ "$PURGE" = 1 ]; then
@@ -154,8 +157,10 @@ for d in centinela_central agent; do
     rm -rf "$PREFIX/$d.old"
 done
 cp "$SRC/central/requirements.txt" "$PREFIX/requirements.txt"
-# El instalador se queda en el servidor para poder desinstalar sin el repositorio.
+# El instalador se queda en el servidor para poder desinstalar sin el repositorio,
+# y el actualizador para el temporizador diario.
 cp "$SRC/central/install.sh" "$PREFIX/install.sh"
+cp "$SRC/central/update.sh" "$PREFIX/update.sh"
 
 if [ ! -x "$PREFIX/venv/bin/python" ]; then
     echo "Creando el entorno de Python ..."
@@ -228,10 +233,35 @@ SystemCallArchitectures=native
 WantedBy=multi-user.target
 EOF
 
+cat > "$UPD_SERVICE" <<EOF
+[Unit]
+Description=Centinela central - actualizacion desde GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh $PREFIX/update.sh
+EOF
+
+cat > "$UPD_TIMER" <<EOF
+[Unit]
+Description=Centinela central - comprobar actualizaciones cada dia
+
+[Timer]
+OnCalendar=*-*-* 04:00
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 "$LAUNCHER" init
 chmod 640 "$STATE"/central.db* 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable centinela-central >/dev/null 2>&1
+systemctl enable --now centinela-central-update.timer >/dev/null 2>&1
 systemctl restart centinela-central
 
 # Solo la seccion [server]: [smtp] tambien tiene «port».

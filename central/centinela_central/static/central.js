@@ -52,7 +52,9 @@
 
   // ---------------------------------------------------------------- confirmaciones
   document.addEventListener('submit', function (e) {
-    var msg = e.target.getAttribute('data-confirm');
+    // Un formulario con varios botones (guardar, borrar...) confirma segun el boton pulsado.
+    var b = e.submitter;
+    var msg = (b && b.getAttribute('data-confirm')) || e.target.getAttribute('data-confirm');
     if (msg && !window.confirm(msg)) e.preventDefault();
   });
 

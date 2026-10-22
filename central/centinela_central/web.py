@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import VERSION, alerts, auth, db, fmt, ingest, rollup, views
+from . import VERSION, admin, alerts, auth, db, fmt, ingest, mailer, rollup, settings, views
 from .bundle import Bundle
 from .config import Config
 
@@ -77,6 +77,7 @@ def create_app(cfg: Config) -> FastAPI:
     env.globals.update(base=cfg.base_path, version=VERSION, status_label=views.status_label,
                        sev_label=views.sev_label, level=views.level)
 
+    settings.apply_timezone()
     stop = threading.Event()
 
     def background():
@@ -137,6 +138,7 @@ def create_app(cfg: Config) -> FastAPI:
     def page(request: Request, name: str, ctx: dict, status: int = 200) -> HTMLResponse:
         if ctx.get("s"):
             ctx.setdefault("top", views.top_counts())
+            ctx.setdefault("upd", views.update_status(cfg))
         return templates.TemplateResponse(request, name, ctx, status_code=status)
 
     async def form_with_csrf(request: Request, s) -> dict | None:
@@ -183,6 +185,11 @@ def create_app(cfg: Config) -> FastAPI:
             res = await run_in_threadpool(ingest.ingest, host, data, int(time.time()), ip_of(request))
         except ingest.IngestError as e:
             return JSONResponse({"error": str(e)}, status_code=422)
+        # Version del agente que reparte este central: el agente que vaya por
+        # detras se actualiza solo (comprueba la suma antes de instalar).
+        if not bundle.error:
+            res["agent_update"] = {"version": bundle.version, "sha256": bundle.sha256,
+                                   "path": "/dl/centinela-agent.tar.gz"}
         return JSONResponse(res)
 
     @app.get(B + "/dl/install.sh")
@@ -335,6 +342,128 @@ def create_app(cfg: Config) -> FastAPI:
             return to_login(request) if not s else PlainTextResponse("CSRF", status_code=403)
         await run_in_threadpool(views.revoke_code, str(form.get("code_hash", "")), s["username"], ip_of(request))
         return RedirectResponse(B + "/enroll", status_code=303)
+
+    # ------------------------------------------------------------ ajustes: avisos
+
+    def notify_ctx(s, **extra):
+        return {"s": s, **views.notify_info(cfg), **extra}
+
+    @app.get(B + "/settings/notify", response_class=HTMLResponse)
+    def notify_page(request: Request, msg: str = ""):
+        s = session(request)
+        if not s:
+            return to_login(request)
+        flash = ("ok", "Ajustes guardados.") if msg == "saved" else None
+        return page(request, "settings_notify.html", notify_ctx(s, flash=flash))
+
+    @app.post(B + "/settings/notify", response_class=HTMLResponse)
+    async def notify_save(request: Request):
+        s = session(request)
+        form = await form_with_csrf(request, s)
+        if form is None:
+            return to_login(request) if not s else PlainTextResponse("CSRF", status_code=403)
+        try:
+            mail_cfg, notify_cfg = views.parse_notify_form(form)
+        except views.FormError as e:
+            return page(request, "settings_notify.html", notify_ctx(s, flash=("bad", str(e)), form=form), status=400)
+        await run_in_threadpool(settings.put, "mail", mail_cfg, s["username"], ip_of(request))
+        await run_in_threadpool(settings.put, "notify", notify_cfg, s["username"], ip_of(request))
+        settings.apply_timezone()
+        return RedirectResponse(B + "/settings/notify?msg=saved", status_code=303)
+
+    @app.post(B + "/settings/notify/test", response_class=HTMLResponse)
+    async def notify_test(request: Request):
+        s = session(request)
+        form = await form_with_csrf(request, s)
+        if form is None:
+            return to_login(request) if not s else PlainTextResponse("CSRF", status_code=403)
+        to = [a.strip() for a in str(form.get("to", "")).replace(";", ",").split(",") if a.strip()]
+        if not to or not all(mailer.valid_email(a) for a in to):
+            return page(request, "settings_notify.html", notify_ctx(s, flash=("bad", "Indica una dirección de correo válida.")))
+        try:
+            txt = await run_in_threadpool(mailer.send_test, cfg, to)
+            flash = ("ok", txt)
+        except mailer.MailError as e:
+            await run_in_threadpool(mailer._record, False, "prueba: %s" % e)
+            flash = ("bad", "No se pudo enviar: %s" % e)
+        return page(request, "settings_notify.html", notify_ctx(s, flash=flash))
+
+    @app.post(B + "/settings/notify/weekly", response_class=HTMLResponse)
+    async def notify_weekly(request: Request):
+        s = session(request)
+        form = await form_with_csrf(request, s)
+        if form is None:
+            return to_login(request) if not s else PlainTextResponse("CSRF", status_code=403)
+        me = views.user_email(s["user_id"])
+        to = [me] if form.get("only_me") and me else None
+        try:
+            flash = ("ok", await run_in_threadpool(mailer.send_weekly, cfg, int(time.time()), to))
+        except mailer.MailError as e:
+            await run_in_threadpool(mailer._record, False, "informe semanal: %s" % e)
+            flash = ("bad", "No se pudo enviar: %s" % e)
+        return page(request, "settings_notify.html", notify_ctx(s, flash=flash))
+
+    # ------------------------------------------------------------ ajustes: usuarios
+
+    def users_ctx(s, **extra):
+        return {"s": s, "nav": "users", "users": admin.users(), "me_email": views.user_email(s["user_id"]), **extra}
+
+    @app.get(B + "/settings/users", response_class=HTMLResponse)
+    def users_page(request: Request):
+        s = session(request)
+        if not s:
+            return to_login(request)
+        return page(request, "settings_users.html", users_ctx(s))
+
+    async def users_action(request: Request, fn):
+        s = session(request)
+        form = await form_with_csrf(request, s)
+        if form is None:
+            return to_login(request) if not s else PlainTextResponse("CSRF", status_code=403)
+        try:
+            extra = await run_in_threadpool(fn, s, form) or {}
+        except admin.AdminError as e:
+            return page(request, "settings_users.html", users_ctx(s, flash=("bad", str(e))), status=400)
+        return page(request, "settings_users.html", users_ctx(s, **extra))
+
+    @app.post(B + "/settings/users/add", response_class=HTMLResponse)
+    async def users_add(request: Request):
+        def fn(s, form):
+            user = str(form.get("username", "")).strip()
+            pw = admin.add(user, str(form.get("email", "")), s["username"], ip_of(request))
+            return {"flash": ("ok", "Usuario %s creado." % user), "new_pw": (user, pw)}
+        return await users_action(request, fn)
+
+    @app.post(B + "/settings/users/{uid}/update", response_class=HTMLResponse)
+    async def users_update(request: Request, uid: int):
+        def fn(s, form):
+            admin.update(uid, str(form.get("email", "")), bool(form.get("notify")), bool(form.get("weekly")),
+                         s["username"], ip_of(request))
+            return {"flash": ("ok", "Cambios guardados.")}
+        return await users_action(request, fn)
+
+    @app.post(B + "/settings/users/{uid}/reset", response_class=HTMLResponse)
+    async def users_reset(request: Request, uid: int):
+        def fn(s, form):
+            user, pw = admin.reset_password(uid, s["username"], ip_of(request))
+            return {"flash": ("ok", "Contraseña nueva para %s; sus sesiones abiertas se han cerrado." % user),
+                    "new_pw": (user, pw)}
+        return await users_action(request, fn)
+
+    @app.post(B + "/settings/users/{uid}/delete", response_class=HTMLResponse)
+    async def users_delete(request: Request, uid: int):
+        def fn(s, form):
+            admin.delete(uid, s["user_id"], s["username"], ip_of(request))
+            return {"flash": ("ok", "Usuario borrado.")}
+        return await users_action(request, fn)
+
+    @app.post(B + "/settings/password", response_class=HTMLResponse)
+    async def own_password(request: Request):
+        def fn(s, form):
+            admin.change_own_password(s["user_id"], str(form.get("current", "")), str(form.get("new", "")),
+                                      str(form.get("repeat", "")), ip_of(request), s["id_hash"])
+            return {"flash": ("ok", "Contraseña cambiada. Las demás sesiones se han cerrado.")}
+        return await users_action(request, fn)
 
     if B:
         @app.get(B, include_in_schema=False)

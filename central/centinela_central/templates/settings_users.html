@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Usuarios{% endblock %}
+{% block crumbs %}Ajustes › <b>Usuarios</b>{% endblock %}
+{% block content %}
+{% if flash %}<div class="alert-box {{ flash[0] if flash[0] != 'ok' else 'info' }}" role="status">{{ icon('check' if flash[0] == 'ok' else 'circle-alert') }}<div>{{ flash[1] }}</div></div>{% endif %}
+
+{% if new_pw %}
+<section class="card">
+  <div class="card-head"><h2>Contraseña de {{ new_pw[0] }}</h2></div>
+  <div class="card-body">
+    <p style="margin-top:0">Solo se muestra ahora. Pásasela por un canal seguro y que la cambie al entrar, en esta misma página.</p>
+    <div class="cmd" data-copy>{{ new_pw[1] }}</div>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-head"><h2>Usuarios</h2><div class="right keep"><span class="muted">{{ users | length }}</span></div></div>
+  <div class="card-body flush">
+    {% for u in users %}
+    <form method="post" action="{{ base }}/settings/users/{{ u.id }}/update" class="user-row">
+      <input type="hidden" name="csrf" value="{{ s.csrf }}">
+      <div class="who">
+        <div class="name">{{ icon('user') }} {{ u.username }}{% if u.id == s.user_id %} <span class="pill accent">tú</span>{% endif %}</div>
+        <div class="meta">alta {{ u.created_at | dt }} · doble factor {{ 'activado' if u.totp else 'no' }}</div>
+      </div>
+      <div class="field"><label class="sr-only" for="email-{{ u.id }}">Correo de {{ u.username }}</label>
+        <input class="input" id="email-{{ u.id }}" name="email" value="{{ u.email or '' }}" placeholder="correo para los avisos"></div>
+      <div class="opts">
+        <label class="check"><input type="checkbox" name="notify" value="1" {{ 'checked' if u.notify }}> avisos</label>
+        <label class="check"><input type="checkbox" name="weekly" value="1" {{ 'checked' if u.weekly }}> informe semanal</label>
+      </div>
+      <div class="acts">
+        <button class="btn sm" type="submit">{{ icon('check') }}Guardar</button>
+        {% if u.id != s.user_id %}
+        <button class="btn sm" type="submit" formaction="{{ base }}/settings/users/{{ u.id }}/reset"
+          data-confirm="¿Generar una contraseña nueva para {{ u.username }}? La actual dejará de valer.">{{ icon('key-round') }}Nueva contraseña</button>
+        <button class="btn sm danger" type="submit" formaction="{{ base }}/settings/users/{{ u.id }}/delete"
+          data-confirm="¿Borrar el usuario {{ u.username }}?">{{ icon('trash-2') }}Borrar</button>
+        {% endif %}
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="grid two">
+  <section class="card">
+    <div class="card-head"><h2>Añadir usuario</h2></div>
+    <div class="card-body">
+      <form method="post" action="{{ base }}/settings/users/add">
+        <input type="hidden" name="csrf" value="{{ s.csrf }}">
+        <div class="field"><label for="nu">Usuario</label><input class="input" id="nu" name="username" required maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
+        <div class="field"><label for="ne">Correo <span class="muted">(para los avisos)</span></label><input class="input" id="ne" name="email" type="email"></div>
+        <button class="btn primary" type="submit">{{ icon('circle-plus') }}Crear con contraseña generada</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Mi contraseña</h2></div>
+    <div class="card-body">
+      <form method="post" action="{{ base }}/settings/password">
+        <input type="hidden" name="csrf" value="{{ s.csrf }}">
+        <input type="hidden" name="username" value="{{ s.username }}" autocomplete="username">
+        <div class="field"><label for="pc">Actual</label><input class="input" id="pc" name="current" type="password" autocomplete="current-password" required></div>
+        <div class="field"><label for="pn">Nueva <span class="muted">(10 caracteres o más)</span></label><input class="input" id="pn" name="new" type="password" autocomplete="new-password" minlength="10" required></div>
+        <div class="field"><label for="pr">Repítela</label><input class="input" id="pr" name="repeat" type="password" autocomplete="new-password" minlength="10" required></div>
+        <button class="btn" type="submit">{{ icon('lock') }}Cambiar</button>
+      </form>
+      <p class="muted" style="margin:14px 0 0">El doble factor se activa en el servidor del central: <code>centinela-central user totp {{ s.username }}</code></p>
+    </div>
+  </section>
+</div>
+{% endblock %}

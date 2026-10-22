@@ -80,5 +80,38 @@ class CpuTest(unittest.TestCase):
         self.assertIsNone(system.cpu_percent(None, [1] * 10))
 
 
+
+class UpdaterTest(unittest.TestCase):
+    def test_versiones(self):
+        from centinela_agent.updater import vnum
+        self.assertTrue(vnum("0.10.0") > vnum("0.9.9"))
+        self.assertEqual(vnum("1.2"), (1, 2, 0))
+
+    def test_paquete_con_rutas_peligrosas(self):
+        import io
+        import tarfile
+        import tempfile
+        from centinela_agent.updater import _safe_extract
+        for nombre in ("../fuera.txt", "/etc/passwd", "otro/fichero.py"):
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as t:
+                info = tarfile.TarInfo(nombre)
+                info.size = 2
+                t.addfile(info, io.BytesIO(b"hi"))
+            with tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(ValueError):
+                    _safe_extract(buf.getvalue(), d)
+
+    def test_no_baja_de_version(self):
+        from centinela_agent import updater
+        u = updater.Updater(transport=None)
+        llamado = []
+        u._apply = lambda *a: llamado.append(a)
+        u.check({"version": "0.0.1", "sha256": "a" * 64})
+        u.check({"version": "9.0.0", "sha256": "malo"})
+        u.check({"version": "9.0.0", "sha256": "a" * 64, "path": "/../../etc"})
+        self.assertEqual(llamado, [])
+
+
 if __name__ == "__main__":
     unittest.main()

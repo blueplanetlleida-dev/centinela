@@ -1,0 +1,9 @@
+{%- macro pill(label, fg, bg) -%}
+<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;line-height:18px;background:{{ bg }};color:{{ fg }};white-space:nowrap;">{{ label }}</span>
+{%- endmacro -%}
+{%- macro sev_pill(sev) -%}{% set s = SEV.get(sev, SEV['info']) %}{{ pill(s[0], s[1], s[2]) }}{%- endmacro -%}
+{%- macro status_pill(st) -%}
+{%- set m = {'ok': ('Bien', '#15803d', '#dcfce7'), 'info': ('Bien', '#15803d', '#dcfce7'), 'warn': ('Aviso', '#b45309', '#fef3c7'),
+             'crit': ('Crítico', '#b91c1c', '#fee2e2'), 'offline': ('Sin contacto', '#b91c1c', '#fee2e2'), 'new': ('Esperando', '#525251', '#f1eef5')} -%}
+{%- set s = m.get(st, m['new']) %}{{ pill(s[0], s[1], s[2]) }}
+{%- endmacro -%}

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import secrets
 import time
 
@@ -264,3 +266,104 @@ def delete_host(hid: str, user: str, ip: str) -> None:
         c.execute("DELETE FROM alerts WHERE host_id = ?", (hid,))
         c.execute("DELETE FROM hosts WHERE id = ?", (hid,))
         db.audit(c, now, user, ip, "delete", "host=%s name=%s" % (hid, h["name"] if h else "?"))
+
+
+# ------------------------------------------------------------ ajustes de avisos
+
+TIMEZONES = ("Europe/Madrid", "Atlantic/Canary", "Europe/Lisbon", "Europe/London", "Europe/Paris", "UTC",
+             "America/Mexico_City", "America/Bogota", "America/Argentina/Buenos_Aires")
+DAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+
+class FormError(Exception):
+    pass
+
+
+def update_status(cfg) -> dict | None:
+    """Lo que dejo el actualizador diario del central (update.sh)."""
+    try:
+        with open(os.path.join(os.path.dirname(cfg.db), "update.json"), "r", encoding="utf-8") as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def user_email(uid: int) -> str:
+    r = db.conn().execute("SELECT email FROM users WHERE id = ?", (uid,)).fetchone()
+    return (r["email"] or "") if r else ""
+
+
+def notify_info(cfg) -> dict:
+    from . import mailer, settings
+    m = settings.mail(cfg)
+    n = settings.notify()
+    sin_correo = [r["username"] for r in db.conn().execute(
+        "SELECT username FROM users WHERE (email IS NULL OR email = '') AND (notify = 1 OR weekly = 1)")]
+    return {
+        "nav": "notify",
+        "mail": dict(m, password=""), "has_password": bool(m.get("password")),
+        "notify": n, "ready": settings.mail_ready(m),
+        "sendmail": settings.sendmail_bin(),
+        "alert_to": mailer.recipients("alert"), "weekly_to": mailer.recipients("weekly"),
+        "sin_correo": sin_correo, "last": mailer.last_status(),
+        "timezones": TIMEZONES if n["timezone"] in TIMEZONES else TIMEZONES + (n["timezone"],),
+        "days": DAYS, "from_conf": bool(cfg.smtp.get("host")) and not settings.get("mail", settings.MAIL_DEFAULT)["host"],
+    }
+
+
+def parse_notify_form(form) -> tuple:
+    from . import mailer, settings
+
+    def entero(name, lo, hi, default):
+        try:
+            v = int(str(form.get(name, default)).strip())
+        except ValueError:
+            raise FormError("Valor no válido en «%s»." % name)
+        if not lo <= v <= hi:
+            raise FormError("«%s» tiene que estar entre %d y %d." % (name, lo, hi))
+        return v
+
+    actual = settings.get("mail", settings.MAIL_DEFAULT)
+    method = str(form.get("method", "smtp"))
+    if method not in ("smtp", "sendmail"):
+        raise FormError("Método de envío no válido.")
+    security = str(form.get("security", "starttls"))
+    if security not in ("starttls", "ssl", "none"):
+        raise FormError("Seguridad no válida.")
+    host = str(form.get("host", "")).strip()
+    if host and not re.match(r"^[A-Za-z0-9.-]{1,253}$", host):
+        raise FormError("Servidor SMTP no válido.")
+    if method == "smtp" and not host:
+        raise FormError("Falta el servidor SMTP (o elige el sendmail del propio servidor).")
+    remitente = str(form.get("from", "")).strip()
+    if remitente and not mailer.valid_email(remitente):
+        raise FormError("La dirección del remitente no es válida.")
+    password = str(form.get("password", ""))
+    if not password and not form.get("clear_password"):
+        password = actual.get("password", "")       # en blanco: se conserva la que habia
+    mail_cfg = {
+        "method": method, "host": host, "port": entero("port", 1, 65535, 587), "security": security,
+        "user": str(form.get("user", "")).strip()[:200], "password": password[:200],
+        "from": remitente, "from_name": " ".join(str(form.get("from_name", "Centinela")).split())[:60] or "Centinela",
+    }
+    extra = [a.strip() for a in re.split(r"[\s,;]+", str(form.get("extra_to", ""))) if a.strip()]
+    malas = [a for a in extra if not mailer.valid_email(a)]
+    if malas:
+        raise FormError("Direcciones no válidas: %s" % ", ".join(malas[:5]))
+    tz = str(form.get("timezone", "Europe/Madrid")).strip()
+    if not re.match(r"^[A-Za-z0-9_+/-]{1,64}$", tz) or ".." in tz or not os.path.isfile(os.path.join("/usr/share/zoneinfo", tz)):
+        raise FormError("Zona horaria desconocida.")
+    min_sev = str(form.get("min_sev", "warn"))
+    notify_cfg = {
+        "enabled": bool(form.get("enabled")),
+        "min_sev": min_sev if min_sev in ("warn", "crit") else "warn",
+        "resolved": bool(form.get("resolved")),
+        "delay": entero("delay", 0, 1440, 5) * 60,
+        "extra_to": extra[:50],
+        "weekly": bool(form.get("weekly")),
+        "weekly_day": entero("weekly_day", 1, 7, 1),
+        "weekly_hour": entero("weekly_hour", 0, 23, 8),
+        "timezone": tz,
+    }
+    return mail_cfg, notify_cfg

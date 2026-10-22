@@ -1,0 +1,15 @@
+{% if nuevas %}PROBLEMAS NUEVOS ({{ nuevas | length }})
+
+{% for (name, hid), lista in por_host %}{{ name }}
+{% for a in lista %}  [{{ SEV.get(a.sev, SEV['info'])[0] | upper }}] {{ a.title }}
+{% if a.detail %}      {{ a.detail }}
+{% endif %}      desde {{ a.opened_at | ago(now) }} ({{ a.opened_at | dt }})
+{% endfor %}{% if url %}  {{ url }}/host/{{ hid }}
+{% endif %}
+{% endfor %}{% endif %}{% if resueltas %}RESUELTOS
+
+{% for a in resueltas %}  {{ a.name }}: {{ a.title }} (duró {{ (a.closed_at - a.opened_at) | duration }})
+{% endfor %}
+{% endif %}{% if url %}Panel: {{ url }}/
+Ajustes de avisos: {{ url }}/settings/notify
+{% endif %}

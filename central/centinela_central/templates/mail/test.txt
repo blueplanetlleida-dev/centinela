@@ -1,0 +1,8 @@
+El correo de Centinela funciona.
+
+{% if not n.enabled %}Los avisos de alertas están desactivados.{% else %}Se avisa de {{ 'los problemas críticos' if n.min_sev == 'crit' else 'los avisos y los problemas críticos' }} cuando duran más de {{ (n.delay | int) | duration }}{% if n.resolved %}, y también cuando se resuelven{% endif %}.{% endif %}
+Avisos a: {{ alert_to | join(', ') if alert_to else 'nadie' }}
+{% if n.weekly %}Informe semanal los {{ ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados', 'domingos'][n.weekly_day | int] }} a las {{ n.weekly_hour }}:00 ({{ n.timezone }}) a: {{ weekly_to | join(', ') if weekly_to else 'nadie' }}{% else %}Informe semanal desactivado.{% endif %}
+{% if url %}
+Panel: {{ url }}/
+{% endif %}

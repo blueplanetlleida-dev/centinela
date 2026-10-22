@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{% block title %}Centinela{% endblock %}</title>
+</head>
+<body style="margin:0;padding:0;background:#F8F6FB;font-family:Montserrat,'Segoe UI',Helvetica,Arial,sans-serif;color:#262626;font-size:14px;line-height:1.5;">
+<span style="display:none;max-height:0;max-width:0;overflow:hidden;opacity:0;">{% block preheader %}{% endblock %}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F8F6FB;">
+<tr><td align="center" style="padding:24px 12px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:660px;background:#ffffff;border:1px solid #E9E3F1;border-radius:14px;">
+    <tr><td style="background:#7938AD;background-image:linear-gradient(115deg,#7938AD 0%,#B53486 100%);padding:18px 24px;border-radius:13px 13px 0 0;color:#ffffff;">
+      <div style="font-size:19px;font-weight:800;letter-spacing:-0.02em;">centinela</div>
+      <div style="font-size:13px;opacity:0.92;margin-top:2px;">{% block subtitle %}{% endblock %}</div>
+    </td></tr>
+    <tr><td style="padding:22px 24px 8px;">
+      {% block content %}{% endblock %}
+    </td></tr>
+    <tr><td style="padding:14px 24px 20px;border-top:1px solid #F0EBF6;font-size:12px;color:#8a8a89;">
+      {% if url %}<a href="{{ url }}/" style="color:#7938AD;text-decoration:none;font-weight:600;">Abrir el panel</a> ·
+      <a href="{{ url }}/settings/notify" style="color:#7938AD;text-decoration:none;">Ajustes de avisos</a><br>{% endif %}
+      {% block footer %}Lo recibes porque estás en la lista de avisos de este central de Centinela.{% endblock %}
+    </td></tr>
+  </table>
+</td></tr>
+</table>
+</body>
+</html>

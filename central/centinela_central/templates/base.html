@@ -23,7 +23,7 @@
       <span class="wtop-count {{ 'bad' if top.offline }}">{{ top.offline }}</span></a>
     {% endif %}
     {% if s %}
-    <span class="wtop-item plain hide-sm">Hola, {{ s.username }}</span>
+    <a class="wtop-item hide-sm" href="{{ base }}/settings/users">Hola, {{ s.username }}</a>
     <form method="post" action="{{ base }}/logout">
       <input type="hidden" name="csrf" value="{{ s.csrf }}">
       <button class="wtop-item" type="submit" title="Salir">{{ icon('log-out') }}<span class="label hide-sm">Salir</span></button>
@@ -37,7 +37,20 @@
         <a class="wmenu-head {{ 'active' if nav == 'alerts' }}" href="{{ base }}/alerts" {{ 'aria-current=page' if nav == 'alerts' }}>{{ icon('triangle-alert') }}Alertas
           {% if top and (top.crit + top.warn) %}<span class="badge wtop-count {{ 'bad' if top.crit }}">{{ top.crit + top.warn }}</span>{% endif %}{{ icon('chevron-right', 'chev') }}</a>
         <a class="wmenu-head {{ 'active' if nav == 'enroll' }}" href="{{ base }}/enroll" {{ 'aria-current=page' if nav == 'enroll' }}>{{ icon('circle-plus') }}Añadir servidor{{ icon('chevron-right', 'chev') }}</a>
+        <div class="wmenu-sep" aria-hidden="true">Ajustes</div>
+        <a class="wmenu-head {{ 'active' if nav == 'notify' }}" href="{{ base }}/settings/notify" {{ 'aria-current=page' if nav == 'notify' }}>{{ icon('bell') }}Avisos{{ icon('chevron-right', 'chev') }}</a>
+        <a class="wmenu-head {{ 'active' if nav == 'users' }}" href="{{ base }}/settings/users" {{ 'aria-current=page' if nav == 'users' }}>{{ icon('users') }}Usuarios{{ icon('chevron-right', 'chev') }}</a>
       </div>
+      {% if s %}
+      <div class="wside-foot">
+        Centinela {{ version }}
+        {% if upd %}<br>
+          {% if upd.result == 'available' %}<span class="pill accent" title="{{ upd.detail }}">{{ upd.latest }} disponible</span>
+          {% elif upd.result == 'error' %}<span class="pill bad" title="{{ upd.detail }}">la actualización falló</span>
+          {% else %}<span title="{{ upd.detail }}">actualizaciones: {{ upd.checked | ago }}</span>{% endif %}
+        {% endif %}
+      </div>
+      {% endif %}
     </nav>
     <main class="wmain" id="main">
       <div class="wcrumbs">

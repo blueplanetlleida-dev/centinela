@@ -31,11 +31,17 @@ agent_src =
 [alerts]
 # Segundos sin informe para dar un servidor por perdido.
 offline_after = 300
-# Un problema tiene que durar esto antes de avisar (evita avisos por picos).
-notify_after = 300
+
+[update]
+# Actualizacion del central desde las versiones publicadas en GitHub (etiquetas
+# flota-vX.Y.Z), una vez al dia: auto la instala, notify solo la anuncia en el
+# panel, off no mira. Los agentes se ponen al dia solos desde el central.
+mode = auto
+repo = blueplanetlleida-dev/centinela
 
 [smtp]
-# Sin host no se envia correo: las alertas solo se ven en el panel.
+# Correo saliente de partida. Lo normal es configurarlo en el panel
+# (Ajustes > Avisos), que tiene prioridad sobre esta seccion.
 host =
 port = 587
 starttls = yes
@@ -79,7 +85,6 @@ class Config:
 
         a = cp["alerts"]
         self.offline_after = max(60, a.getint("offline_after", 300))
-        self.notify_after = max(0, a.getint("notify_after", 300))
 
         m = cp["smtp"]
         self.smtp = {
@@ -92,9 +97,6 @@ class Config:
             "to": [x.strip() for x in m.get("to", "").split(",") if x.strip()],
         }
 
-    @property
-    def smtp_enabled(self) -> bool:
-        return bool(self.smtp["host"] and self.smtp["from"] and self.smtp["to"])
 
 
 def _find_agent_src() -> Path:

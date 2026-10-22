@@ -1,0 +1,14 @@
+{% extends "_layout.html" %}
+{% block title %}Correo de prueba{% endblock %}
+{% block preheader %}El correo de Centinela funciona.{% endblock %}
+{% block subtitle %}Correo de prueba{% endblock %}
+{% block content %}
+<p style="margin:0 0 14px;font-size:15px;"><b style="color:#15803d;">&#10003; El correo de Centinela funciona.</b></p>
+<p style="margin:0 0 8px;">Con la configuración actual:</p>
+<ul style="margin:0 0 14px;padding-left:20px;color:#525251;">
+  <li>{% if not n.enabled %}Los avisos de alertas están <b>desactivados</b>.{% else %}Se avisa de {{ 'los problemas críticos' if n.min_sev == 'crit' else 'los avisos y los problemas críticos' }}
+      cuando duran más de {{ (n.delay | int) | duration }}{% if n.resolved %}, y también cuando se resuelven{% endif %}. «Sin contacto» se avisa en cuanto se detecta.{% endif %}</li>
+  <li>Avisos a: {{ alert_to | join(', ') if alert_to else 'nadie' }}</li>
+  <li>{% if n.weekly %}Informe semanal los {{ ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados', 'domingos'][n.weekly_day | int] }} a las {{ n.weekly_hour }}:00 ({{ n.timezone }}) a: {{ weekly_to | join(', ') if weekly_to else 'nadie' }}{% else %}Informe semanal desactivado.{% endif %}</li>
+</ul>
+{% endblock %}

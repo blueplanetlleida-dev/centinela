@@ -12,6 +12,7 @@ from . import PROTOCOL, VERSION
 from .collect import Sampler
 from .config import STATE_DIR, Config
 from .transport import Spool, Transport, TransportError
+from .updater import Updater
 from .util import log, write_atomic
 
 BATCH = 100          # informes por envio
@@ -62,8 +63,8 @@ class Status:
             pass
 
 
-def deliver(tr: Transport, spool: Spool, report: dict, st: Status) -> int | None:
-    """Entrega lo pendiente y el informe nuevo. Devuelve el intervalo que pida el central."""
+def deliver(tr: Transport, spool: Spool, report: dict, st: Status) -> dict | None:
+    """Entrega lo pendiente y el informe nuevo. Devuelve la respuesta del central (None si fallo)."""
     pending = spool.batch(BATCH - 1)
     payload = {"agent": {"version": VERSION}, "reports": [r for _, r in pending] + [report]}
     try:
@@ -88,8 +89,7 @@ def deliver(tr: Transport, spool: Spool, report: dict, st: Status) -> int | None
                 break
             spool.drop([f for f, _ in more])
         st.ok(spool.count())
-        iv = resp.get("interval")
-        return int(iv) if isinstance(iv, int) and 15 <= iv <= 3600 else None
+        return resp
 
     detalle = resp.get("error") or "HTTP %d" % code
     if code in (401, 403):
@@ -119,6 +119,7 @@ def run_forever(cfg: Config) -> int:
     st = Status()
     sampler = Sampler()
     sampler.prime()
+    updater = Updater(tr)
     log.info("centinela-agent %s: informando a %s cada %ds como %s", VERSION, cfg.central, cfg.interval, cfg.agent_id)
 
     interval = cfg.interval
@@ -128,10 +129,13 @@ def run_forever(cfg: Config) -> int:
         t0 = time.monotonic()
         report = build_report(sampler, seq, interval)
         seq += 1
-        nuevo = deliver(tr, spool, report, st)
-        if nuevo and nuevo != interval:
-            log.info("el central pide informar cada %ds", nuevo)
-            interval = nuevo
+        resp = deliver(tr, spool, report, st)
+        if resp:
+            iv = resp.get("interval")
+            if isinstance(iv, int) and 15 <= iv <= 3600 and iv != interval:
+                log.info("el central pide informar cada %ds", iv)
+                interval = iv
+            updater.check(resp.get("agent_update"))
         stop.wait(max(1.0, interval - (time.monotonic() - t0)))
     log.info("centinela-agent detenido")
     return 0

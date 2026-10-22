@@ -11,7 +11,7 @@ import os
 import sqlite3
 import threading
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS login_fail (ip TEXT NOT NULL, ts INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS login_fail_ip ON login_fail(ip, ts);
 
+-- Ajustes editables desde el panel (avisos, correo...), en JSON.
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
 CREATE TABLE IF NOT EXISTS audit (
     ts     INTEGER NOT NULL,
     user   TEXT,
@@ -111,7 +114,24 @@ def init(path: str) -> None:
         os.makedirs(d, mode=0o750, exist_ok=True)
     c = conn()
     c.executescript(SCHEMA)
-    c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema', ?)", (str(SCHEMA_VERSION),))
+    _migrate(c)
+    c.execute("INSERT INTO meta(key, value) VALUES ('schema', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+              (str(SCHEMA_VERSION),))
+
+
+# Columnas que llegaron despues de la primera version: se anaden a las bases
+# existentes sin tocar sus datos.
+COLUMNS = {
+    "users": [("email", "TEXT"), ("notify", "INTEGER NOT NULL DEFAULT 1"), ("weekly", "INTEGER NOT NULL DEFAULT 1")],
+}
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    for table, cols in COLUMNS.items():
+        existentes = {r[1] for r in c.execute("PRAGMA table_info(%s)" % table)}
+        for name, decl in cols:
+            if name not in existentes:
+                c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
 
 
 def conn() -> sqlite3.Connection:

@@ -167,3 +167,113 @@ class ApiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MigracionTest(unittest.TestCase):
+    def test_base_de_datos_0_1(self):
+        """Una base creada por la 0.1 (usuarios sin correo) se pone al dia sin perder nada."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "v1.db")
+            c = sqlite3.connect(path)
+            c.executescript("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,"
+                            " pw_hash TEXT NOT NULL, totp_secret TEXT, totp_last_step INTEGER NOT NULL DEFAULT 0,"
+                            " created_at INTEGER NOT NULL);"
+                            "INSERT INTO users (username, pw_hash, created_at) VALUES ('admin', 'x', 1);")
+            c.commit()
+            c.close()
+            db._local.__dict__.clear()
+            try:
+                db.init(path)
+                u = db.conn().execute("SELECT username, email, notify, weekly FROM users").fetchone()
+                self.assertEqual(tuple(u), ("admin", None, 1, 1))
+                self.assertEqual(db.meta_get("schema"), str(db.SCHEMA_VERSION))
+            finally:
+                db._local.__dict__.clear()
+
+
+class AvisosTest(unittest.TestCase):
+    def setUp(self):
+        from centinela_central import mailer, settings
+        self.mailer, self.settings = mailer, settings
+        self.tmp = tempfile.TemporaryDirectory()
+        db._local.__dict__.clear()
+        db.init(os.path.join(self.tmp.name, "t.db"))
+        self.enviados = []
+        self._send = mailer.send
+        mailer.send = lambda cfg, to, subject, html, text: self.enviados.append((to, subject, html, text))
+        mailer._fallo["at"] = 0
+        self.cfg = type("C", (), {"public_url": "https://central.test/flota", "smtp": {}})()
+        settings.put("mail", dict(settings.MAIL_DEFAULT, host="smtp.test"))
+        with db.tx() as c:
+            c.execute("INSERT INTO users (username, pw_hash, created_at, email) VALUES ('ana', 'x', 1, 'ana@ejemplo.com')")
+            c.execute("INSERT INTO users (username, pw_hash, created_at, email, notify) VALUES ('luis', 'x', 1, 'luis@ejemplo.com', 0)")
+
+    def tearDown(self):
+        self.mailer.send = self._send
+        db._local.__dict__.clear()
+        self.tmp.cleanup()
+
+    def host_con_disco(self, pct, now):
+        code = views.create_code("", 3600, "t", "l")   # sin etiqueta: el nombre sera el hostname
+        r = views.enroll_agent({"code": code, "machine_id": "m%d" % pct, "hostname": "web%d" % pct}, "ip", now)
+        host = auth.host_by_token(r["token"])
+        ingest.ingest(host, {"reports": [{"ts": now, "metrics": {"fs": [fs("/", pct)]}}]}, now, "ip")
+
+    def test_avisa_tras_el_retraso_y_solo_a_quien_quiere(self):
+        now = int(time.time())
+        self.settings.put("notify", dict(self.settings.NOTIFY_DEFAULT, delay=300, extra_to=["guardia@ejemplo.com"]))
+        self.host_con_disco(97, now)
+        self.mailer.notify_alerts(self.cfg, now + 60)       # aun no ha pasado el retraso
+        self.assertEqual(self.enviados, [])
+        self.mailer.notify_alerts(self.cfg, now + 400)
+        self.assertEqual(len(self.enviados), 1)
+        to, subject, html, text = self.enviados[0]
+        self.assertEqual(to, ["ana@ejemplo.com", "guardia@ejemplo.com"])
+        self.assertIn("CRÍTICO", subject)
+        self.assertIn("Disco / al 97 %", html)
+        self.assertIn("https://central.test/flota/host/", html)
+        self.mailer.notify_alerts(self.cfg, now + 500)       # no se repite
+        self.assertEqual(len(self.enviados), 1)
+
+    def test_solo_criticos(self):
+        now = int(time.time())
+        self.settings.put("notify", dict(self.settings.NOTIFY_DEFAULT, delay=0, min_sev="crit"))
+        self.host_con_disco(91, now)                         # aviso, no critico
+        self.mailer.notify_alerts(self.cfg, now + 1)
+        self.assertEqual(self.enviados, [])
+
+    def test_sin_correo_configurado_no_acumula(self):
+        now = int(time.time())
+        self.settings.put("mail", dict(self.settings.MAIL_DEFAULT))
+        self.settings.put("notify", dict(self.settings.NOTIFY_DEFAULT, delay=0))
+        self.host_con_disco(97, now)
+        self.mailer.notify_alerts(self.cfg, now + 1)
+        pend = db.conn().execute("SELECT COUNT(*) FROM alerts WHERE notified = 0").fetchone()[0]
+        self.assertEqual(pend, 0)                            # el dia que se configure no llega una avalancha
+        self.assertEqual(self.enviados, [])
+
+    def test_informe_semanal(self):
+        now = int(time.time())
+        self.host_con_disco(50, now)
+        self.mailer.send_weekly(self.cfg, now)
+        to, subject, html, text = self.enviados[0]
+        self.assertIn("Informe semanal", subject)
+        # luis no quiere avisos, pero el informe semanal si (son opciones separadas).
+        self.assertEqual(to, ["ana@ejemplo.com", "luis@ejemplo.com"])
+        self.assertIn("web50", html)
+        self.assertIn("web50", text)
+
+    def test_formulario_valida(self):
+        class F(dict):
+            def get(self, k, d=None):
+                return dict.get(self, k, d)
+        base = {"method": "smtp", "host": "smtp.ejemplo.com", "port": "587", "security": "starttls",
+                "from": "centinela@ejemplo.com", "delay": "5", "weekly_day": "1", "weekly_hour": "8",
+                "timezone": "Europe/Madrid", "enabled": "1"}
+        m, n = views.parse_notify_form(F(base))
+        self.assertEqual((m["host"], n["delay"], n["enabled"]), ("smtp.ejemplo.com", 300, True))
+        for malo in ({"host": "smtp ejemplo"}, {"from": "no-es-correo"}, {"timezone": "../../etc/passwd"},
+                     {"extra_to": "ana@ejemplo.com, x"}, {"port": "99999"}):
+            with self.assertRaises(views.FormError, msg=str(malo)):
+                views.parse_notify_form(F(dict(base, **malo)))

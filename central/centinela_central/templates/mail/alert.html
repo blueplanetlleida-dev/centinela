@@ -1,0 +1,38 @@
+{% extends "_layout.html" %}
+{% from "_macros.html" import sev_pill, status_pill with context %}
+{% block title %}Avisos de Centinela{% endblock %}
+{% block preheader %}{% if nuevas %}{{ nuevas[0].name }}: {{ nuevas[0].title }}{% else %}Problemas resueltos{% endif %}{% endblock %}
+{% block subtitle %}{% if nuevas %}{{ nuevas | length }} problema(s) nuevo(s){% endif %}{% if nuevas and resueltas %} · {% endif %}{% if resueltas %}{{ resueltas | length }} resuelto(s){% endif %}{% endblock %}
+{% block content %}
+{% for (name, hid), lista in por_host %}
+  <div style="margin:0 0 18px;">
+    <div style="font-size:15px;font-weight:700;margin:0 0 8px;">
+      {% if url %}<a href="{{ url }}/host/{{ hid }}" style="color:#262626;text-decoration:none;">{{ name }}</a>{% else %}{{ name }}{% endif %}
+    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #F0EBF6;border-radius:10px;">
+    {% for a in lista %}
+      <tr>
+        <td valign="top" style="padding:10px 0 10px 12px;width:84px;{% if not loop.last %}border-bottom:1px solid #F0EBF6;{% endif %}">{{ sev_pill(a.sev) }}</td>
+        <td valign="top" style="padding:10px 12px;{% if not loop.last %}border-bottom:1px solid #F0EBF6;{% endif %}">
+          <div style="font-weight:600;">{{ a.title }}</div>
+          {% if a.detail %}<div style="font-size:12.5px;color:#525251;margin-top:2px;">{{ a.detail }}</div>{% endif %}
+          <div style="font-size:12px;color:#8a8a89;margin-top:3px;">desde {{ a.opened_at | ago(now) }} · {{ a.opened_at | dt }}</div>
+        </td>
+      </tr>
+    {% endfor %}
+    </table>
+  </div>
+{% endfor %}
+{% if resueltas %}
+  <div style="font-size:15px;font-weight:700;margin:6px 0 8px;">Resueltos</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #F0EBF6;border-radius:10px;margin-bottom:16px;">
+  {% for a in resueltas %}
+    <tr><td style="padding:9px 12px;{% if not loop.last %}border-bottom:1px solid #F0EBF6;{% endif %}">
+      <span style="color:#15803d;font-weight:700;">&#10003;</span>
+      <b>{{ a.name }}</b>: {{ a.title }}
+      <span style="color:#8a8a89;font-size:12px;">· duró {{ (a.closed_at - a.opened_at) | duration }}</span>
+    </td></tr>
+  {% endfor %}
+  </table>
+{% endif %}
+{% endblock %}

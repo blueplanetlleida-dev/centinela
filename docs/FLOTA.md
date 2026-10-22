@@ -49,9 +49,28 @@ Si el central no responde, los informes se guardan en
 | Servicios de systemd caídos, hora sin sincronizar, reloj desviado más de 2 min | siempre | — |
 | Actualizaciones de seguridad pendientes | siempre | — |
 
-Una alerta se abre una vez, se actualiza mientras dura y se cierra sola. El
-correo espera a que un problema dure 5 minutos (`notify_after`), salvo el de
-«sin contacto», y agrupa en un solo mensaje todo lo pendiente.
+Una alerta se abre una vez, se actualiza mientras dura y se cierra sola.
+
+## Avisos por correo
+
+Se configuran en el panel, en **Ajustes → Avisos**:
+
+- **Correo saliente**: un servidor SMTP (STARTTLS, SSL/TLS o sin cifrar en red
+  interna) o el `sendmail` del propio servidor del central.
+- **Qué se avisa**: avisos y críticos, o solo críticos; cuánto tiene que durar
+  un problema antes de avisar (5 minutos por defecto, para no despertar a nadie
+  por un pico; «sin contacto» se avisa siempre en cuanto se detecta); y si se
+  avisa también al resolverse. Todo lo pendiente va en un solo correo.
+- **Destinatarios**: cada usuario del panel (**Ajustes → Usuarios**) tiene su
+  correo y elige si recibe los avisos, el informe semanal o ambos; además se
+  pueden añadir direcciones que no son usuarios (una guardia, una lista).
+- **Informe semanal**: el día y la hora que se elijan, con el estado de cada
+  servidor, sus medias de la semana, los problemas abiertos y lo que pasó.
+- Botones para mandar un **correo de prueba** y el **informe semanal ahora**.
+
+Los correos van en HTML, con la estética del panel, y con su versión en texto.
+Mientras no hay correo configurado, las alertas solo se ven en el panel y no
+se acumulan: el día que se configure no llega una avalancha de avisos viejos.
 
 ## Instalar el central
 
@@ -83,8 +102,8 @@ Si se sirve bajo una ruta (`https://dominio.com/flota`), instala con
 `location ^~ /flota/ { proxy_pass http://127.0.0.1:8470; ... }`, sin barra
 final en `proxy_pass` para que la ruta llegue entera.
 
-Para el correo de avisos, rellena `[smtp]` en `central.conf` y reinicia el
-servicio.
+El correo de los avisos se configura después desde el panel, en
+**Ajustes → Avisos**.
 
 ### Administración
 
@@ -140,6 +159,39 @@ Para que un servidor físico informe de todo conviene tener instalados
 `smartmontools` (salud de discos), `lm-sensors` (para cargar los módulos de los
 sensores) e `ipmitool` si tiene BMC.
 
+## Actualizaciones
+
+**Los agentes se actualizan solos desde su central.** En cada envío el central
+les dice qué versión reparte y su SHA-256; el agente que vaya por detrás la
+descarga del propio central, comprueba la suma, valida las rutas del paquete y
+se reinstala con una unidad transitoria de systemd (`centinela-agent-update`),
+conservando su alta. Si una versión falla, no la reintenta hasta pasadas 6 horas.
+
+**El central se actualiza solo desde GitHub.** Un temporizador diario
+(`centinela-central-update.timer`, hacia las 4-6 de la mañana) busca la versión
+publicada más alta con etiqueta `flota-vX.Y.Z` (ni borradores ni prerreleases),
+comprueba su `SHA256SUMS` si lo trae, guarda la versión instalada, instala la
+nueva y comprueba que el servicio arranca; si no arranca, vuelve sola a la
+anterior. Se controla en `central.conf`:
+
+```ini
+[update]
+mode = auto      # auto: instala · notify: solo lo anuncia en el panel · off: no mira
+repo = blueplanetlleida-dev/centinela
+```
+
+```sh
+sudo sh /opt/centinela-central/update.sh --check   # ¿hay versión nueva?
+sudo sh /opt/centinela-central/update.sh --force   # actualizar ya, aunque el modo sea notify
+```
+
+La cadena completa: se publica una versión en GitHub → el central la instala
+esa noche → sus agentes se ponen al día en el siguiente envío.
+
+Las versiones de flota se publican con etiqueta propia (`flota-v0.2.0`) y sin
+marcarlas como «latest», para no confundir al actualizador del Centinela en
+PHP, que mira la última publicada del repositorio.
+
 ## Seguridad
 
 - **El agente no escucha en ningún puerto.** Solo hace conexiones salientes al
@@ -148,8 +200,9 @@ sensores) e `ipmitool` si tiene BMC.
 - **Un token por servidor**, guardado como hash SHA-256 en el central. Borrar el
   servidor en el panel lo revoca sin tocar los demás.
 - **Códigos de alta** de un solo uso, con caducidad y límite de intentos por IP.
-- **El central no puede ejecutar nada en los servidores.** Las correcciones
-  remotas, si llegan, serán un catálogo cerrado y opcional por servidor.
+- **El central reparte el código de los agentes**, y los agentes se actualizan
+  solos desde él: quien controle el central controla qué se ejecuta en la flota.
+  Protégelo como lo que es (doble factor, acceso restringido, el servidor al día).
 - Panel con contraseñas scrypt, doble factor TOTP opcional, sesiones en
   cookie `HttpOnly`/`SameSite`, CSRF en todos los formularios, límite de
   intentos de acceso y CSP sin scripts en línea.

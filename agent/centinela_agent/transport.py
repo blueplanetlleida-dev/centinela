@@ -44,6 +44,23 @@ class Transport:
         except (urllib.error.URLError, socket.timeout, ssl.SSLError, OSError) as e:
             raise TransportError(str(getattr(e, "reason", e)))
 
+    def get(self, path: str, timeout: float = 60, max_bytes: int = 20 * 1024 * 1024) -> tuple:
+        """(codigo_http, bytes). Para descargar el paquete de actualizacion."""
+        headers = {"User-Agent": "centinela-agent/" + VERSION}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        req = urllib.request.Request(self.central + path, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=self.ctx) as r:
+                data = r.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise TransportError("la descarga supera %d bytes" % max_bytes)
+                return r.status, data
+        except urllib.error.HTTPError as e:
+            return e.code, b""
+        except (urllib.error.URLError, socket.timeout, ssl.SSLError, OSError) as e:
+            raise TransportError(str(getattr(e, "reason", e)))
+
 
 def _json(raw: bytes) -> dict:
     try:

@@ -1,0 +1,72 @@
+{% extends "_layout.html" %}
+{% from "_macros.html" import sev_pill, status_pill with context %}
+{% block title %}Informe semanal de Centinela{% endblock %}
+{% block preheader %}{{ cuenta.total }} servidor(es): {{ cuenta.ok }} bien, {{ cuenta.warn }} con avisos, {{ cuenta.crit }} críticos, {{ cuenta.offline }} sin contacto{% endblock %}
+{% block subtitle %}Informe semanal · del {{ desde | dt }} al {{ now | dt }}{% endblock %}
+{% block content %}
+{% set tiles = [('Servidores', cuenta.total, '#7938AD'), ('Bien', cuenta.ok, '#0E8A4F'), ('Con avisos', cuenta.warn, '#E9A100' if cuenta.warn else '#b9b3c2'),
+                ('Críticos', cuenta.crit, '#E0364F' if cuenta.crit else '#b9b3c2'), ('Sin contacto', cuenta.offline, '#B53486' if cuenta.offline else '#b9b3c2')] %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="6" border="0" style="margin:0 -6px 14px;">
+  <tr>
+  {% for label, n, color in tiles %}
+    <td align="center" style="background:{{ color }};color:#ffffff;border-radius:12px;padding:10px 4px;">
+      <div style="font-size:22px;font-weight:800;line-height:1.1;">{{ n }}</div>
+      <div style="font-size:11.5px;font-weight:600;">{{ label }}</div>
+    </td>
+  {% endfor %}
+  </tr>
+</table>
+
+<div style="font-size:15px;font-weight:700;margin:4px 0 8px;">Servidores esta semana</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #F0EBF6;border-radius:10px;font-size:12.5px;">
+  <tr style="background:#FAF8FD;color:#8a8a89;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;">
+    <td style="padding:8px 10px;font-weight:700;">Servidor</td>
+    <td style="padding:8px 6px;font-weight:700;" align="right">CPU</td>
+    <td style="padding:8px 6px;font-weight:700;" align="right">Mem.</td>
+    <td style="padding:8px 6px;font-weight:700;" align="right">Disco</td>
+    <td style="padding:8px 6px;font-weight:700;" align="right">Temp.</td>
+    <td style="padding:8px 6px;font-weight:700;" align="right">Informó</td>
+    <td style="padding:8px 10px;font-weight:700;" align="right">Alertas</td>
+  </tr>
+  {% for h in hosts %}
+  <tr>
+    <td style="padding:8px 10px;border-top:1px solid #F0EBF6;">
+      {% if url %}<a href="{{ url }}/host/{{ h.id }}" style="color:#262626;text-decoration:none;font-weight:600;">{{ h.name }}</a>{% else %}<b>{{ h.name }}</b>{% endif %}<br>{{ status_pill(h.status) }}
+    </td>
+    <td align="right" style="padding:8px 6px;border-top:1px solid #F0EBF6;">{{ h.cpu | pct }}</td>
+    <td align="right" style="padding:8px 6px;border-top:1px solid #F0EBF6;">{{ h.mem | pct }}</td>
+    <td align="right" style="padding:8px 6px;border-top:1px solid #F0EBF6;{% if h.disk is not none and h.disk >= 90 %}color:#b91c1c;font-weight:700;{% endif %}">{{ h.disk | pct }}</td>
+    <td align="right" style="padding:8px 6px;border-top:1px solid #F0EBF6;">{{ (h.temp | num(0)) ~ ' °C' if h.temp is not none else '—' }}</td>
+    <td align="right" style="padding:8px 6px;border-top:1px solid #F0EBF6;{% if h.avail < 95 %}color:#b45309;font-weight:700;{% endif %}">{{ h.avail | num(1) }} %</td>
+    <td align="right" style="padding:8px 10px;border-top:1px solid #F0EBF6;">{% if h.crit %}<span style="color:#b91c1c;font-weight:700;">{{ h.crit }} crít.</span>{% endif %}{% if h.crit and h.warn %} · {% endif %}{% if h.warn %}{{ h.warn }} aviso{{ 's' if h.warn > 1 }}{% endif %}{% if not h.crit and not h.warn %}<span style="color:#8a8a89;">ninguna</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+<div style="font-size:11.5px;color:#8a8a89;margin:6px 0 16px;">CPU y memoria: media de la semana. Disco y temperatura: el máximo. «Informó»: parte del tiempo en que el agente envió datos.</div>
+
+<div style="font-size:15px;font-weight:700;margin:4px 0 8px;">Problemas abiertos ahora</div>
+{% if abiertas %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #F0EBF6;border-radius:10px;margin-bottom:16px;">
+  {% for a in abiertas %}
+  <tr><td valign="top" style="padding:9px 0 9px 12px;width:84px;{% if not loop.last %}border-bottom:1px solid #F0EBF6;{% endif %}">{{ sev_pill(a.sev) }}</td>
+      <td style="padding:9px 12px;{% if not loop.last %}border-bottom:1px solid #F0EBF6;{% endif %}"><b>{{ a.name }}</b>: {{ a.title }}
+        <span style="color:#8a8a89;font-size:12px;">· desde {{ a.opened_at | ago(now) }}</span></td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<p style="color:#15803d;font-weight:600;margin:0 0 16px;">&#10003; Ninguno.</p>
+{% endif %}
+
+<div style="font-size:15px;font-weight:700;margin:4px 0 8px;">Lo que pasó durante la semana</div>
+{% if semana %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #F0EBF6;border-radius:10px;margin-bottom:16px;font-size:13px;">
+  {% for a in semana %}
+  <tr><td valign="top" style="padding:8px 0 8px 12px;width:84px;{% if not loop.last %}border-bottom:1px solid #F0EBF6;{% endif %}">{{ sev_pill(a.sev) }}</td>
+      <td style="padding:8px 12px;{% if not loop.last %}border-bottom:1px solid #F0EBF6;{% endif %}"><b>{{ a.name }}</b>: {{ a.title }}<br>
+        <span style="color:#8a8a89;font-size:12px;">{{ a.opened_at | dt }} · {% if a.closed_at %}duró {{ (a.closed_at - a.opened_at) | duration }}{% else %}sigue abierto{% endif %}</span></td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<p style="color:#15803d;font-weight:600;margin:0 0 16px;">&#10003; Una semana sin incidencias.</p>
+{% endif %}
+{% endblock %}

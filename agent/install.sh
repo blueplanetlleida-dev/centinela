@@ -70,6 +70,11 @@ if [ "$ACTION" = uninstall ]; then
     exit 0
 fi
 
+# Actualizacion (sin --central): el central es el que ya figura en la configuracion.
+if [ -z "$CENTRAL" ] && [ -f "$CONF_DIR/agent.conf" ]; then
+    CENTRAL=$(sed -n 's/^url *= *//p' "$CONF_DIR/agent.conf" | head -n 1)
+fi
+
 if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
     echo "Este instalador necesita systemd." >&2
     exit 1
