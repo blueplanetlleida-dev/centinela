@@ -1,0 +1,56 @@
+{% from "_macros.html" import icon, logo %}<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#7938AD">
+<title>{% block title %}Flota{% endblock %} · Centinela</title>
+<link rel="icon" href="{{ base }}/static/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="{{ base }}/static/fonts/montserrat-latin-wght.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ base }}/static/central.css?v={{ version }}">
+<script src="{{ base }}/static/central.js?v={{ version }}" defer></script>
+</head>
+<body data-base="{{ base }}">
+{% block body %}
+<div class="wshell">
+  <header class="wtop">
+    <a class="wtop-brand" href="{{ base }}/" aria-label="Centinela, inicio">{{ logo() }}<span class="tagline">Flota</span></a>
+    <span class="wtop-spacer"></span>
+    {% if top %}
+    <a class="wtop-item" href="{{ base }}/alerts">{{ icon('triangle-alert') }}<span class="label">Alertas</span>
+      <span class="wtop-count {{ 'bad' if top.crit or top.offline }}">{{ top.crit + top.warn }}</span></a>
+    <a class="wtop-item hide-sm" href="{{ base }}/?f=offline">{{ icon('wifi-off') }}<span class="label">Sin contacto</span>
+      <span class="wtop-count {{ 'bad' if top.offline }}">{{ top.offline }}</span></a>
+    {% endif %}
+    {% if s %}
+    <span class="wtop-item plain hide-sm">Hola, {{ s.username }}</span>
+    <form method="post" action="{{ base }}/logout">
+      <input type="hidden" name="csrf" value="{{ s.csrf }}">
+      <button class="wtop-item" type="submit" title="Salir">{{ icon('log-out') }}<span class="label hide-sm">Salir</span></button>
+    </form>
+    {% endif %}
+  </header>
+  <div class="wbody">
+    <nav class="wside" aria-label="Menú">
+      <div class="wmenu">
+        <a class="wmenu-head {{ 'active' if nav == 'fleet' }}" href="{{ base }}/" {{ 'aria-current=page' if nav == 'fleet' }}>{{ icon('gauge') }}Flota{{ icon('chevron-right', 'chev') }}</a>
+        <a class="wmenu-head {{ 'active' if nav == 'alerts' }}" href="{{ base }}/alerts" {{ 'aria-current=page' if nav == 'alerts' }}>{{ icon('triangle-alert') }}Alertas
+          {% if top and (top.crit + top.warn) %}<span class="badge wtop-count {{ 'bad' if top.crit }}">{{ top.crit + top.warn }}</span>{% endif %}{{ icon('chevron-right', 'chev') }}</a>
+        <a class="wmenu-head {{ 'active' if nav == 'enroll' }}" href="{{ base }}/enroll" {{ 'aria-current=page' if nav == 'enroll' }}>{{ icon('circle-plus') }}Añadir servidor{{ icon('chevron-right', 'chev') }}</a>
+      </div>
+    </nav>
+    <main class="wmain" id="main">
+      <div class="wcrumbs">
+        <a href="{{ base }}/" aria-label="Inicio">{{ icon('house', 'sm') }}</a>
+        {% block crumbs %}{% endblock %}
+      </div>
+      <div class="content">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
+  </div>
+</div>
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+{% endblock %}
+</body>
+</html>

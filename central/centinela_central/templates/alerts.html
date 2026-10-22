@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, sev_pill, ago %}
+{% block title %}Alertas{% endblock %}
+{% block crumbs %}<b>Alertas</b>{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="card-head"><h2>Abiertas</h2><div class="right keep"><span class="muted">{{ open | length }}</span></div></div>
+  <div class="card-body flush table-wrap">
+    {% if open %}
+    <table class="t">
+      <thead><tr><th>Gravedad</th><th>Servidor</th><th>Problema</th><th>Desde</th></tr></thead>
+      <tbody>
+      {% for a in open %}
+        <tr class="{{ 'row-bad' if a.sev == 'crit' else '' }}">
+          <td>{{ sev_pill(a.sev) }}</td>
+          <td class="name"><a href="{{ base }}/host/{{ a.host_id }}">{{ a.name }}</a></td>
+          <td><div>{{ a.title }}</div>{% if a.detail %}<div class="meta">{{ a.detail }}</div>{% endif %}</td>
+          <td class="nowrap">{{ ago(a.opened_at) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty ok">{{ icon('check') }}Ninguna alerta abierta</div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Resueltas en los últimos 7 días</h2><div class="right keep"><span class="muted">{{ closed | length }}</span></div></div>
+  <div class="card-body flush table-wrap">
+    {% if closed %}
+    <table class="t">
+      <thead><tr><th>Gravedad</th><th>Servidor</th><th>Problema</th><th>Cuándo</th><th class="num">Duró</th></tr></thead>
+      <tbody>
+      {% for a in closed %}
+        <tr>
+          <td>{{ sev_pill(a.sev) }}</td>
+          <td class="name"><a href="{{ base }}/host/{{ a.host_id }}">{{ a.name }}</a></td>
+          <td>{{ a.title }}</td>
+          <td class="nowrap">{{ a.opened_at | dt }}</td>
+          <td class="num nowrap">{{ (a.closed_at - a.opened_at) | duration }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">Nada resuelto en la última semana.</div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

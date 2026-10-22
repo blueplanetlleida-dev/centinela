@@ -1,0 +1,62 @@
+{% from "_macros.html" import icon, status_pill, status_dot, sev_pill, meter, ago %}
+<div class="wtiles">
+  <a class="wtile purple" href="{{ base }}/"><span class="wtile-label">Servidores</span><span class="wtile-value">{{ counts.total }}</span></a>
+  <a class="wtile {{ 'pink' if counts.offline else 'idle' }}" href="{{ base }}/?f=offline"><span class="wtile-label">Sin contacto</span><span class="wtile-value">{{ counts.offline }}</span></a>
+  <a class="wtile {{ 'red' if counts.crit else 'idle' }}" href="{{ base }}/?f=crit"><span class="wtile-label">Críticos</span><span class="wtile-value">{{ counts.crit }}</span></a>
+  <a class="wtile {{ 'amber' if counts.warn else 'idle' }}" href="{{ base }}/?f=warn"><span class="wtile-label">Con avisos</span><span class="wtile-value">{{ counts.warn }}</span></a>
+  <a class="wtile green" href="{{ base }}/?f=ok"><span class="wtile-label">Bien</span><span class="wtile-value">{{ counts.ok }}</span></a>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Servidores</h2>
+    <div class="right keep"><span class="muted">Se actualiza solo · {{ now | dt }}</span></div>
+  </div>
+  {% if not hosts %}
+    {% if counts.total %}
+    <div class="empty">Ningún servidor en este filtro. <a href="{{ base }}/">Ver todos</a></div>
+    {% else %}
+    <div class="card-body">
+      <div class="alert-box info">{{ icon('info') }}<div>Todavía no hay servidores. Genera un código en
+        <a href="{{ base }}/enroll">Añadir servidor</a> y ejecuta en cada máquina la orden que te dará.</div></div>
+    </div>
+    {% endif %}
+  {% else %}
+  <div class="card-body flush table-wrap">
+    <table class="t fleet">
+      <thead>
+        <tr>
+          <th>Servidor</th><th>Estado</th><th>CPU</th><th>Memoria</th><th>Disco</th>
+          <th class="num">Temp.</th><th class="num">Carga</th><th>Último informe</th><th>Problema principal</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for h in hosts %}
+        {% set rowcls = 'row-bad' if h.status in ('crit', 'offline') else 'row-warn' if h.status == 'warn' else '' %}
+        <tr class="{{ rowcls }}" data-href="{{ base }}/host/{{ h.id }}">
+          <td>
+            <div class="host">{{ status_dot(h.status) }}
+              <div>
+                <div class="name"><a href="{{ base }}/host/{{ h.id }}">{{ h.name }}</a></div>
+                <div class="meta">{{ h.hostname }}{% if h.os %} · {{ h.os }}{% endif %}{% if h.panel %} · {{ h.panel }}{% endif %}</div>
+              </div>
+            </div>
+          </td>
+          <td data-label="Estado">{{ status_pill(h.status) }}</td>
+          <td data-label="CPU">{{ meter(h.cpu, 'ok') }}</td>
+          <td data-label="Memoria">{{ meter(h.mem, level(h.mem)) }}</td>
+          <td data-label="Disco" title="{{ h.disk_mount }}">{{ meter(h.disk, level(h.disk)) }}</td>
+          <td data-label="Temp." class="num nowrap"><span>{% if h.temp is not none %}{{ h.temp | num(0) }} °C{% else %}<span class="muted" title="Sin sensores (habitual en máquinas virtuales)">—</span>{% endif %}</span></td>
+          <td data-label="Carga" class="num nowrap"><span>{% if h.load and h.load[0] is not none %}{{ h.load[0] | num(2) }}{% if h.cores %} <span class="muted">/ {{ h.cores }}</span>{% endif %}{% else %}—{% endif %}</span></td>
+          <td data-label="Informe" class="nowrap">{{ ago(h.last_seen) }}</td>
+          <td data-label="Problema" class="problem"><span>
+            {% if h.problem %}<span class="pill {{ sev_label(h.problem.sev)[0] }}">{{ h.problem.title }}</span>{% if h.alerts | length > 1 %} <span class="muted nowrap">+{{ h.alerts | length - 1 }} más</span>{% endif %}
+            {% else %}<span class="muted">—</span>{% endif %}
+          </span></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>

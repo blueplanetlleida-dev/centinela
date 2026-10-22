@@ -1,0 +1,26 @@
+[Unit]
+Description=Centinela - agente de salud del servidor
+Documentation=https://github.com/blueplanetlleida-dev/centinela
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/centinela-agent run
+Restart=always
+RestartSec=15
+# Vigilar no debe competir con lo vigilado.
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=256M
+# Corre como root porque SMART, IPMI y parte de /proc lo necesitan, pero no
+# escribe fuera de su estado y no escucha en ningun puerto.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+StateDirectory=centinela-agent
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}No existe{% endblock %}
+{% block crumbs %}<b>No existe</b>{% endblock %}
+{% block content %}
+<section class="card"><div class="card-body">
+  <div class="alert-box warn">{{ icon('triangle-alert') }}<div>Ese servidor no existe o se ha borrado. <a href="{{ base }}/">Volver a la flota</a></div></div>
+</div></section>
+{% endblock %}

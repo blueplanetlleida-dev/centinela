@@ -42,3 +42,12 @@ backup*
 .DS_Store
 node_modules/
 vendor/
+
+# --- Flota (agente y central en Python) ----------------------------------
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.db
+*.db-wal
+*.db-shm

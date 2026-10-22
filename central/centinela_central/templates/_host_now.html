@@ -1,0 +1,51 @@
+{% from "_macros.html" import icon, status_pill, sev_pill, ago %}
+<section class="card">
+  <div class="card-head">
+    <h2>{{ h.name }}</h2>
+    {{ status_pill(h.status) }}
+    <div class="right"><span class="muted">Último informe {{ ago(h.last_seen) }}{% if h.agent_version %} · agente {{ h.agent_version }}{% endif %}</span></div>
+  </div>
+  <div class="card-body">
+    {% if h.status == 'new' %}
+    <div class="alert-box info" style="margin-bottom:14px">{{ icon('clock') }}<div>Dado de alta, esperando el primer informe del agente. Si tarda más de un par de minutos, mira en el servidor <code>journalctl -u centinela-agent</code>.</div></div>
+    {% endif %}
+    <div class="figs">
+      <div class="fig"><span class="lbl">CPU</span>
+        <span class="val">{{ sum.cpu | pct }}</span>
+        <span class="sub">{% if m.cpu %}E/S {{ m.cpu.iowait | pct }} · steal {{ m.cpu.steal | pct }}{% else %}—{% endif %}</span></div>
+      <div class="fig"><span class="lbl">Memoria</span>
+        <span class="val">{{ sum.mem | pct }}</span>
+        <span class="sub">{% if m.mem %}libres {{ m.mem.available | bytes }} de {{ m.mem.total | bytes }}{% else %}—{% endif %}</span></div>
+      <div class="fig"><span class="lbl">Disco más lleno</span>
+        <span class="val">{{ sum.disk | pct }}</span>
+        <span class="sub">{{ ('en ' ~ sum.disk_mount) if sum.disk_mount else '—' }}</span></div>
+      <div class="fig"><span class="lbl">Carga</span>
+        <span class="val">{{ sum.load[0] | num(2) if sum.load else '—' }}{% if sum.cores %} <small>/ {{ sum.cores }} núcleos</small>{% endif %}</span>
+        <span class="sub">{% if sum.load | length == 3 %}5 min {{ sum.load[1] | num(2) }} · 15 min {{ sum.load[2] | num(2) }}{% else %}—{% endif %}</span></div>
+      <div class="fig"><span class="lbl">Temperatura</span>
+        {% if sum.temp is not none %}
+        <span class="val">{{ sum.temp | num(0) }} <small>°C</small></span><span class="sub">{{ sum.temp_label }}</span>
+        {% else %}
+        <span class="val muted">—</span><span class="sub">{{ 'sin sensores (máquina virtual)' if not sum.physical else 'sin sensores legibles' }}</span>
+        {% endif %}</div>
+      <div class="fig"><span class="lbl">Encendido</span>
+        <span class="val">{{ sum.uptime | duration }}</span>
+        <span class="sub">{% if inv.boot_time %}desde {{ inv.boot_time | dt }}{% else %}—{% endif %}</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Problemas</h2><div class="right keep"><span class="muted">{{ alerts | length }} abierto(s)</span></div></div>
+  <div class="card-body flush">
+    {% for a in alerts %}
+    <div class="list-row">
+      {{ sev_pill(a.sev) }}
+      <div class="grow"><div class="title">{{ a.title }}</div>{% if a.detail %}<div class="detail">{{ a.detail }}</div>{% endif %}</div>
+      <span class="when">desde {{ ago(a.opened_at) }}</span>
+    </div>
+    {% else %}
+    <div class="empty ok">{{ icon('check') }}Sin problemas</div>
+    {% endfor %}
+  </div>
+</section>

@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, status_pill, sev_pill, meter, ago %}
+{% block title %}{{ h.name }}{% endblock %}
+{% block crumbs %}<a href="{{ base }}/">Flota</a> › <b>{{ h.name }}</b>{% endblock %}
+{% block content %}
+<div class="stack" id="host-now" data-refresh="{{ base }}/fragment/host/{{ h.id }}">
+{% include "_host_now.html" %}
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Histórico</h2>
+    <div class="right">
+      <div class="seg" role="group" aria-label="Periodo" id="range">
+        <button type="button" data-range="6h">6 h</button>
+        <button type="button" data-range="24h" class="on" aria-pressed="true">24 h</button>
+        <button type="button" data-range="7d">7 días</button>
+        <button type="button" data-range="30d">30 días</button>
+        <button type="button" data-range="1y">1 año</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="grid charts" id="charts" data-src="{{ base }}/api/ui/host/{{ h.id }}/series">
+  {% set charts = [
+    ('cpu', 'CPU', 'Uso, espera de E/S y CPU retenida por el anfitrión'),
+    ('mem', 'Memoria', 'RAM y swap en uso'),
+    ('load', 'Carga', 'Media de 1 minuto'),
+    ('disk', 'Disco más lleno', 'Ocupación de la partición más llena'),
+    ('net', 'Red', 'Tráfico de las interfaces físicas'),
+    ('io', 'E/S de disco', 'Lectura y escritura en los discos físicos'),
+    ('temp', 'Temperatura máxima', 'El sensor más caliente en cada momento'),
+  ] %}
+  {% for key, title, desc in charts %}
+  <section class="card chart-card" data-chart="{{ key }}" {{ 'hidden' if key == 'temp' and not temps }}>
+    <div class="card-head"><h3>{{ title }}</h3><div class="right keep"><span class="muted chart-now"></span></div></div>
+    <div class="card-body">
+      <div class="chart" tabindex="0" role="img" aria-label="{{ title }}: {{ desc }}"></div>
+      <div class="legend"></div>
+      <button type="button" class="linkish chart-toggle">Ver como tabla</button>
+      <div class="chart-table" hidden></div>
+    </div>
+  </section>
+  {% endfor %}
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <div class="card-head"><h2>Discos y particiones</h2></div>
+    <div class="card-body flush table-wrap">
+      {% if fs %}
+      <table class="t">
+        <thead><tr><th>Montaje</th><th>Ocupado</th><th class="num">Libre</th><th class="num">Inodos</th></tr></thead>
+        <tbody>
+        {% for f in fs %}
+          <tr>
+            <td><div class="name mono">{{ f.mount }}</div><div class="meta">{{ f.dev }} · {{ f.fs }}{% if f.ro %} · solo lectura{% endif %}</div></td>
+            <td>{% if f.unreachable %}<span class="pill bad">No responde</span>{% else %}{{ meter(f.pct, level(f.pct)) }}{% endif %}</td>
+            <td class="num nowrap">{{ f.avail | bytes }} <span class="muted">de {{ f.total | bytes }}</span></td>
+            <td class="num">{{ f.inodes_pct | pct if f.inodes_pct is not none else '—' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<div class="empty">Sin datos.</div>{% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Red y E/S</h2></div>
+    <div class="card-body flush table-wrap">
+      <table class="t">
+        <thead><tr><th>Interfaz / disco</th><th class="num">Entrada / lectura</th><th class="num">Salida / escritura</th><th class="num">Detalle</th></tr></thead>
+        <tbody>
+        {% for n in net %}
+          <tr><td><div class="name">{{ n.if }}</div><div class="meta">red · {{ n.state or '¿?' }}</div></td>
+            <td class="num">{{ n.rx_bps | rate }}</td><td class="num">{{ n.tx_bps | rate }}</td>
+            <td class="num">{% if n.errs or n.drops %}<span class="pill warn">{{ n.errs }} err · {{ n.drops }} desc.</span>{% else %}<span class="muted">sin errores</span>{% endif %}</td></tr>
+        {% endfor %}
+        {% for d in io %}
+          <tr><td><div class="name">{{ d.dev }}</div><div class="meta">disco</div></td>
+            <td class="num">{{ d.r_bps | rate }}</td><td class="num">{{ d.w_bps | rate }}</td>
+            <td class="num">{{ d.util | pct }} ocupado</td></tr>
+        {% endfor %}
+        {% if not net and not io %}<tr><td colspan="4" class="muted">Sin datos.</td></tr>{% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Temperaturas y ventiladores</h2></div>
+    <div class="card-body flush table-wrap">
+      {% set ipmi = sec.ipmi or {} %}
+      {% if temps or fans or ipmi.temps or ipmi.fans or ipmi.psu %}
+      <table class="t">
+        <thead><tr><th>Sensor</th><th class="num">Lectura</th><th class="num">Umbrales</th></tr></thead>
+        <tbody>
+        {% for t in temps %}
+          <tr><td><div class="name">{{ t.label }}</div><div class="meta">{{ t.chip }}</div></td>
+            <td class="num">{{ t.c | num(1) }} °C</td>
+            <td class="num muted">{% if t.high %}aviso {{ t.high | num(0) }}{% endif %}{% if t.crit %} · crít. {{ t.crit | num(0) }}{% endif %}</td></tr>
+        {% endfor %}
+        {% for f in fans %}
+          <tr><td><div class="name">{{ f.label }}</div><div class="meta">{{ f.chip }} · ventilador</div></td>
+            <td class="num">{{ f.rpm }} rpm</td><td></td></tr>
+        {% endfor %}
+        {% for grupo, nombre in (('temps', 'IPMI'), ('fans', 'IPMI · ventilador'), ('psu', 'IPMI · fuente')) %}
+          {% for r in ipmi[grupo] or [] %}
+          <tr><td><div class="name">{{ r.name }}</div><div class="meta">{{ nombre }}</div></td>
+            <td class="num">{{ r.value | num(1) if r.value is not none else '—' }} {{ r.unit }}</td>
+            <td class="num">{% if r.status == 'ok' %}<span class="pill ok">ok</span>{% else %}<span class="pill bad">{{ r.status }}</span>{% endif %}</td></tr>
+          {% endfor %}
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty">{% if sum.physical %}No se leen sensores. Comprueba que el núcleo carga el módulo del chip (<code>sensors-detect</code>, paquete lm-sensors); si el servidor tiene BMC, instala <code>ipmitool</code>.{% else %}Este servidor no expone sensores de temperatura: es lo habitual en una máquina virtual. La temperatura del hardware la vigila el proveedor.{% endif %}</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Salud de los discos</h2></div>
+    <div class="card-body flush table-wrap">
+      {% if sec.smart %}
+      <table class="t">
+        <thead><tr><th>Disco</th><th>SMART</th><th class="num">Temp.</th><th class="num">Horas</th><th class="num">Desgaste / sectores</th></tr></thead>
+        <tbody>
+        {% for d in sec.smart %}
+          <tr><td><div class="name mono">{{ d.dev }}</div><div class="meta">{{ d.model }}{% if d.capacity %} · {{ d.capacity | bytes }}{% endif %}</div></td>
+            <td>{% if d.get('standby') %}<span class="pill muted">en reposo</span>{% elif d.get('passed') is sameas false %}<span class="pill bad">{{ icon('circle-alert') }}Fallo</span>{% elif d.passed %}<span class="pill ok">{{ icon('check') }}Bien</span>{% else %}<span class="pill muted">¿?</span>{% endif %}</td>
+            <td class="num">{{ (d.get('temp') | string) ~ ' °C' if d.get('temp') is not none else '—' }}</td>
+            <td class="num">{{ d.get('power_on_hours') if d.get('power_on_hours') is not none else '—' }}</td>
+            <td class="num">{% set malos = (d.get('reallocated') or 0) + (d.get('pending') or 0) + (d.get('uncorrectable') or 0) %}
+              {% if d.get('wear_pct') is not none %}{{ d.wear_pct }} % de vida usada{% endif %}
+              {% if malos %} <span class="pill warn">{{ malos }} sectores dañados</span>{% elif d.get('wear_pct') is none %}<span class="muted">sin sectores dañados</span>{% endif %}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty">{% if sum.physical %}Instala <code>smartmontools</code> en el servidor para vigilar el estado de los discos: avisa antes de que fallen.{% else %}Los discos de una máquina virtual no tienen SMART; los físicos los vigila el proveedor.{% endif %}</div>
+      {% endif %}
+      {% for a in sec.raid or [] %}
+        <div class="list-row">{% if a.degraded %}<span class="pill bad">Degradado</span>{% else %}<span class="pill ok">Bien</span>{% endif %}
+          <div class="grow"><div class="title">RAID {{ a.name }} · {{ a.level }}</div><div class="detail">[{{ a.disks }}] {{ a.members | join(', ') }}{% if a.sync %} · {{ a.sync.op }} {{ a.sync.pct | num(1) }} %{% endif %}</div></div></div>
+      {% endfor %}
+      {% for z in sec.zfs or [] %}
+        <div class="list-row">{% if z.health == 'ONLINE' %}<span class="pill ok">ONLINE</span>{% else %}<span class="pill bad">{{ z.health }}</span>{% endif %}
+          <div class="grow"><div class="title">ZFS {{ z.name }}</div><div class="detail">{{ z.alloc | bytes }} de {{ z.size | bytes }} ({{ z.pct | num(0) }} %)</div></div></div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Servicios</h2>
+      <div class="right keep">{% if sec.services %}{% if sec.services.state == 'running' %}<span class="pill ok">systemd: running</span>{% else %}<span class="pill warn">systemd: {{ sec.services.state }}</span>{% endif %}{% endif %}</div></div>
+    <div class="card-body flush">
+      {% if sec.services and sec.services.failed %}
+        {% for u in sec.services.failed %}
+        <div class="list-row"><span class="pill bad">caído</span><div class="grow"><div class="title mono">{{ u.unit }}</div><div class="detail">{{ u.description }}</div></div></div>
+        {% endfor %}
+      {% elif sec.services %}
+        <div class="empty ok">{{ icon('check') }}Ningún servicio caído</div>
+      {% else %}
+        <div class="empty">Sin datos de systemd.</div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Sistema</h2></div>
+    <div class="card-body">
+      <dl class="kv">
+        <dt>Nombre de máquina</dt><dd>{{ inv.fqdn or inv.hostname or h.hostname or '—' }}</dd>
+        <dt>Sistema</dt><dd>{{ (inv.os or {}).name or '—' }}</dd>
+        <dt>Núcleo</dt><dd class="mono">{{ inv.kernel or '—' }} {{ inv.arch or '' }}</dd>
+        <dt>Tipo</dt><dd>{{ virt or '—' }}{% if inv.vendor %} <span class="muted">· {{ inv.vendor }} {{ inv.product }}</span>{% endif %}</dd>
+        <dt>Procesador</dt><dd>{{ inv.cpu_model or '—' }}{% if inv.cpus %} <span class="muted">· {{ inv.cpus }} núcleos</span>{% endif %}</dd>
+        <dt>Memoria</dt><dd>{{ inv.mem_total | bytes }}</dd>
+        {% if panel %}<dt>Panel</dt><dd>{{ panel }}</dd>{% endif %}
+        <dt>Direcciones</dt><dd class="mono">{% for ip in inv.ips or [] %}{{ ip.addr }}/{{ ip.prefix }} <span class="muted">({{ ip.if }})</span>{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</dd>
+        <dt>Actualizaciones</dt><dd>{% set u = inv.updates or {} %}{% if u.total is none %}<span class="muted">no se pudo consultar</span>{% elif u.total == 0 %}al día{% else %}{{ u.total }} pendiente(s){% if u.security %}, <b>{{ u.security }} de seguridad</b>{% endif %}{% endif %}{% if inv.reboot_required %} · <span class="pill warn">reinicio pendiente</span>{% endif %}</dd>
+        <dt>Hora</dt><dd>{% set t = sec.timesync or {} %}{{ t.timezone or '—' }}{% if t.synced %} · sincronizada{% elif t.synced is sameas false %} · <span class="pill warn">sin sincronizar</span>{% endif %}{% if h.skew is not none and (h.skew > 5 or h.skew < -5) %} · desfase {{ h.skew }} s{% endif %}</dd>
+        <dt>Agente</dt><dd>{{ h.agent_version or '—' }}{% if inv.agent %} <span class="muted">· Python {{ inv.agent.python }}</span>{% endif %} <span class="muted">· desde {{ h.last_ip or '¿?' }}</span></dd>
+        <dt>Alta</dt><dd>{{ h.created_at | dt }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Problemas resueltos</h2></div>
+    <div class="card-body flush">
+      {% for a in history %}
+      <div class="list-row">{{ sev_pill(a.sev) }}
+        <div class="grow"><div class="title">{{ a.title }}</div><div class="detail">{{ a.opened_at | dt }} · duró {{ (a.closed_at - a.opened_at) | duration }}</div></div></div>
+      {% else %}
+      <div class="empty">Nada en el historial.</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Administrar</h2></div>
+    <div class="card-body">
+      <form method="post" action="{{ base }}/host/{{ h.id }}/rename" class="form-row">
+        <input type="hidden" name="csrf" value="{{ s.csrf }}">
+        <div class="field"><label for="name">Nombre en el panel</label>
+          <input class="input" id="name" name="name" value="{{ h.name }}" maxlength="80" required></div>
+        <button class="btn" type="submit">{{ icon('pencil') }}Renombrar</button>
+      </form>
+      <hr style="border:0;border-top:1px solid var(--border-soft);margin:18px 0">
+      <form method="post" action="{{ base }}/host/{{ h.id }}/delete" data-confirm="¿Borrar {{ h.name }} del central? Se pierde su historial y su agente dejará de ser aceptado.">
+        <input type="hidden" name="csrf" value="{{ s.csrf }}">
+        <p class="muted" style="margin:0 0 10px">Borrarlo revoca el token del agente y elimina su historial. Para quitar también el agente del servidor: <code>sudo sh /opt/centinela-agent/install.sh --uninstall --purge</code></p>
+        <button class="btn danger" type="submit">{{ icon('trash-2') }}Borrar servidor</button>
+      </form>
+    </div>
+  </section>
+</div>
+{% endblock %}

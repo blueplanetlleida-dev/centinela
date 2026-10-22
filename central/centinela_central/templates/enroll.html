@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, ago %}
+{% block title %}Añadir servidor{% endblock %}
+{% block crumbs %}<b>Añadir servidor</b>{% endblock %}
+{% block content %}
+{% if not bundle_ok %}
+<div class="alert-box bad">{{ icon('circle-alert') }}<div>{{ bundle_error }}</div></div>
+{% endif %}
+
+{% if new_code %}
+<section class="card">
+  <div class="card-head"><h2>Código de alta{% if new_label %} para «{{ new_label }}»{% endif %}</h2></div>
+  <div class="card-body">
+    <p style="margin-top:0">Sirve para un solo servidor y solo se muestra ahora. Ejecuta esto en la máquina, como root:</p>
+    <p><span class="code-big">{{ new_code }}</span></p>
+    <div class="cmd" data-copy>curl -fsSL {{ public_url }}/dl/install.sh -o centinela-install.sh
+sudo sh centinela-install.sh --code {{ new_code }}</div>
+    <details class="more" style="margin-top:12px">
+      <summary>Prefiero revisar el script antes de ejecutarlo</summary>
+      <p class="muted">El primer comando solo lo descarga: ábrelo con <code>less centinela-install.sh</code> antes del segundo. El script comprueba la suma SHA-256 del agente antes de instalarlo
+        (<code class="mono">{{ bundle_sha[:16] }}…</code>, versión {{ bundle_version }}).</p>
+      <p class="muted">Necesita Python 3.8 o superior y systemd. Instala el agente en <code>/opt/centinela-agent</code>, su configuración en
+        <code>/etc/centinela-agent</code> y lo deja corriendo como servicio <code>centinela-agent</code>. Para ponerle otro nombre en el panel añade <code>--name "nombre"</code>.</p>
+    </details>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card-head"><h2>Nuevo código de alta</h2></div>
+  <div class="card-body">
+    <form method="post" action="{{ base }}/enroll" class="form-row">
+      <input type="hidden" name="csrf" value="{{ s.csrf }}">
+      <div class="field"><label for="label">Nombre del servidor (opcional)</label>
+        <input class="input" id="label" name="label" maxlength="80" placeholder="p. ej. web-produccion" autocomplete="off"></div>
+      <div class="field" style="flex:0 1 180px"><label for="ttl">Caduca en</label>
+        <select class="input" id="ttl" name="ttl">
+          <option value="1">1 hora</option>
+          <option value="24" selected>24 horas</option>
+          <option value="168">7 días</option>
+        </select></div>
+      <button class="btn primary" type="submit">{{ icon('circle-plus') }}Generar código</button>
+    </form>
+    {% if not public_url or 'ejemplo.com' in public_url %}
+    <div class="alert-box warn" style="margin-top:14px">{{ icon('triangle-alert') }}<div>Falta la URL pública del central (<code>public_url</code> en <code>central.conf</code>): sin ella las órdenes de instalación no funcionarán.</div></div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Códigos recientes</h2></div>
+  <div class="card-body flush table-wrap">
+    {% if codes %}
+    <table class="t">
+      <thead><tr><th>Nombre</th><th>Creado</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+      {% for c in codes %}
+        <tr>
+          <td class="name">{{ c.label or '—' }}</td>
+          <td class="nowrap">{{ ago(c.created_at) }} <span class="muted">por {{ c.created_by }}</span></td>
+          <td>{% if c.used_at %}<span class="pill ok">usado</span> <a href="{{ base }}/host/{{ c.host_id }}">{{ c.host_name or c.host_id }}</a>
+              {% elif c.expires_at < now %}<span class="pill muted">caducado</span>
+              {% else %}<span class="pill accent">vigente</span> <span class="muted">hasta {{ c.expires_at | dt }}</span>{% endif %}</td>
+          <td class="num">{% if not c.used_at and c.expires_at >= now %}
+            <form method="post" action="{{ base }}/enroll/revoke"><input type="hidden" name="csrf" value="{{ s.csrf }}">
+              <input type="hidden" name="code_hash" value="{{ c.code_hash }}">
+              <button class="btn sm danger" type="submit">Anular</button></form>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">Aún no se ha generado ninguno.</div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
