@@ -3,6 +3,7 @@
 #
 #   sudo sh central/install.sh --url https://flota.ejemplo.com
 #   sudo sh central/install.sh --url https://dominio.com/flota --base-path /flota
+#   sudo sh /opt/centinela-central/install.sh --uninstall [--purge]
 #
 # Necesita systemd y Python 3.9 o superior con el modulo venv. Volver a
 # ejecutarlo actualiza el codigo y conserva la configuracion y los datos.
@@ -20,15 +21,23 @@ URL=""
 BASE=""
 PORT=8470
 LISTEN=127.0.0.1
+ACTION=install
+PURGE=0
+YES=0
 
 usage() {
     cat <<'EOF'
 Uso: install.sh --url URL_PUBLICA [--base-path /ruta] [--port 8470] [--listen 127.0.0.1]
+       install.sh --uninstall [--purge [--yes]]
 
   --url        URL por la que llegarán agentes y navegador, ruta incluida
   --base-path  ruta bajo la que se sirve (por defecto, la raíz)
   --port       puerto local (por defecto 8470)
   --listen     dirección en la que escucha (por defecto 127.0.0.1, detrás de nginx o Caddy)
+  --uninstall  quita el servicio y el código; conserva configuración, datos y usuario
+  --purge      con --uninstall, borra también la configuración, la base de datos
+               (todos los servidores y su historial) y el usuario de sistema
+  --yes        no pide confirmación para --purge (necesario sin terminal)
 EOF
 }
 
@@ -38,12 +47,68 @@ while [ $# -gt 0 ]; do
         --base-path) BASE="${2:-}"; shift 2 ;;
         --port) PORT="${2:-}"; shift 2 ;;
         --listen) LISTEN="${2:-}"; shift 2 ;;
+        --uninstall) ACTION=uninstall; shift ;;
+        --purge) PURGE=1; shift ;;
+        --yes) YES=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Opción desconocida: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
 [ "$(id -u)" = 0 ] || { echo "Hay que ejecutarlo como root." >&2; exit 1; }
+
+if [ "$PURGE" = 1 ] && [ "$ACTION" != uninstall ]; then
+    echo "--purge solo tiene sentido con --uninstall." >&2
+    exit 2
+fi
+
+if [ "$ACTION" = uninstall ]; then
+    if [ "$PURGE" = 1 ] && [ "$YES" != 1 ]; then
+        # La base de datos es todo el historial de la flota: no se borra sin mirar.
+        N=""
+        if [ -f "$STATE/central.db" ] && command -v python3 >/dev/null 2>&1; then
+            N=$(python3 -I -c 'import sqlite3, sys
+c = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+print(c.execute("SELECT COUNT(*) FROM hosts").fetchone()[0])' "$STATE/central.db" 2>/dev/null || true)
+        fi
+        echo "Se borrarán la configuración ($CONF_DIR), los datos ($STATE) y el usuario $SVC_USER."
+        [ -z "$N" ] || echo "La base de datos tiene $N servidor(es) con todo su historial y sus alertas."
+        echo "Copia antes, si la quieres: sqlite3 $STATE/central.db \".backup /root/central-\$(date +%F).db\""
+        if [ ! -t 0 ]; then
+            echo "Sin terminal para confirmar: no se ha tocado nada. Repite con --yes si estás seguro." >&2
+            exit 1
+        fi
+        printf 'Escribe BORRAR para confirmar: '
+        read -r RESP || RESP=""
+        if [ "$RESP" != BORRAR ]; then
+            echo "Cancelado: no se ha tocado nada."
+            exit 1
+        fi
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now centinela-central 2>/dev/null || true
+    fi
+    rm -f "$UNIT" "$LAUNCHER"
+    rm -rf "$PREFIX"
+    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload 2>/dev/null || true
+    if [ "$PURGE" = 1 ]; then
+        rm -rf "$CONF_DIR" "$STATE"
+        if id -u "$SVC_USER" >/dev/null 2>&1; then
+            userdel "$SVC_USER" 2>/dev/null || echo "No se pudo borrar el usuario $SVC_USER (¿tiene procesos vivos?)." >&2
+        fi
+        echo "Central desinstalado, con su configuración, sus datos y el usuario $SVC_USER."
+    else
+        echo "Central desinstalado. Se conservan la configuración ($CONF_DIR), los datos ($STATE)"
+        echo "y el usuario $SVC_USER: si lo reinstalas, sigue donde lo dejó. Para borrarlo todo, repite con --purge."
+    fi
+    echo
+    echo "Los agentes que informaban a este central seguirán intentándolo y guardarán sus informes en cola"
+    echo "(dos días como mucho). Dalos de alta en otro central con un código nuevo, o quítalos en cada servidor:"
+    echo "  sudo sh /opt/centinela-agent/install.sh --uninstall --purge"
+    echo "Si lo publicabas con nginx o Caddy, retira también ese bloque."
+    exit 0
+fi
+
 if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
     echo "Este instalador necesita systemd." >&2
     exit 1
@@ -65,7 +130,8 @@ fi
 
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 [ -f "$SRC/central/centinela_central/__init__.py" ] && [ -f "$SRC/agent/centinela_agent/__init__.py" ] || {
-    echo "Ejecútalo desde una copia del repositorio (faltan central/ o agent/)." >&2
+    echo "Para instalar o actualizar, ejecútalo desde una copia del repositorio (faltan central/ o agent/)." >&2
+    echo "La copia de $PREFIX/install.sh solo sirve para --uninstall." >&2
     exit 1
 }
 
@@ -88,6 +154,8 @@ for d in centinela_central agent; do
     rm -rf "$PREFIX/$d.old"
 done
 cp "$SRC/central/requirements.txt" "$PREFIX/requirements.txt"
+# El instalador se queda en el servidor para poder desinstalar sin el repositorio.
+cp "$SRC/central/install.sh" "$PREFIX/install.sh"
 
 if [ ! -x "$PREFIX/venv/bin/python" ]; then
     echo "Creando el entorno de Python ..."

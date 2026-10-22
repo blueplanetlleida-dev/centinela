@@ -96,6 +96,24 @@ centinela-central enroll-code --label web-01   # código de alta desde la termin
 centinela-central hosts                  # lista rápida
 ```
 
+### Desinstalar el central
+
+El instalador se queda en `/opt/centinela-central/install.sh`, así que no hace
+falta el repositorio:
+
+```sh
+sudo sh /opt/centinela-central/install.sh --uninstall           # quita servicio y código
+sudo sh /opt/centinela-central/install.sh --uninstall --purge   # y además configuración, datos y usuario
+```
+
+Sin `--purge` se conservan `/etc/centinela-central`, `/var/lib/centinela-central`
+y el usuario `centinela-central`: reinstalar sigue donde se dejó, con los mismos
+servidores, historial y usuarios. `--purge` borra la base de datos con toda la
+flota, así que pide escribir `BORRAR` para confirmar (o `--yes` si no hay
+terminal) y antes recuerda cómo sacar una copia. Los agentes que informaban a
+ese central siguen intentándolo y encolan hasta dos días: hay que darlos de
+alta en otro central o desinstalarlos.
+
 ## Añadir un servidor
 
 En el panel, **Añadir servidor** genera un código de un solo uso (caduca en 24
